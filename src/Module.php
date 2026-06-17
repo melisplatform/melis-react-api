@@ -18,4 +18,17 @@ class Module
     {
         return include __DIR__ . '/../config/module.config.php';
     }
+
+    public function getAutoloaderConfig()
+    {
+        return [
+            'Laminas\Loader\StandardAutoloader' => [
+                'namespaces' => [
+                    // Module.php lives in src/, so __DIR__ === src/ →
+                    // MelisReactApi\Controller\Foo maps to src/Controller/Foo.php.
+                    __NAMESPACE__ => __DIR__,
+                ],
+            ],
+        ];
+    }
 }
