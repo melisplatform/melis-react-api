@@ -208,6 +208,41 @@ return [
                                     ],
                                 ],
                             ],
+                            // ── Auth publique (i18n / mot de passe oublié / réinitialisation) ──
+                            // Ces routes sont exclues de l'auth (cf. melis-core/config/excluded.routes.php)
+                            'auth-i18n' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'    => '/i18n[/]',
+                                    'defaults' => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiAuth',
+                                        'action'        => 'i18n',
+                                    ],
+                                ],
+                            ],
+                            'auth-forgot-password' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'    => '/forgot-password[/]',
+                                    'defaults' => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiAuth',
+                                        'action'        => 'forgotPassword',
+                                    ],
+                                ],
+                            ],
+                            'auth-reset-password' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'    => '/reset-password[/]',
+                                    'defaults' => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiAuth',
+                                        'action'        => 'resetPassword',
+                                    ],
+                                ],
+                            ],
                             // ── Sites (MelisCms tool : liste + meta tunnel création) ──
                             'cms-sites-meta' => [
                                 'type'    => 'Segment',
@@ -699,252 +734,6 @@ return [
                                     ],
                                 ],
                             ],
-                            // ── MelisAI — Usage tab (native React): bootstrap + chart data (own API, no legacy controller) ──
-                            'ai-usage-bootstrap' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-usage/bootstrap[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiUsage',
-                                        'action'        => 'bootstrap',
-                                    ],
-                                ],
-                            ],
-                            'ai-usage-charts' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-usage/charts[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiUsage',
-                                        'action'        => 'charts',
-                                    ],
-                                ],
-                            ],
-                            'ai-usage-chart' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-usage/chart[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiUsage',
-                                        'action'        => 'chart',
-                                    ],
-                                ],
-                            ],
-                            // ── MelisAI — Instances tab (native React CRUD) ──────────────────────────
-                            'ai-instances-bootstrap' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-instances/bootstrap[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiInstance',
-                                        'action'        => 'bootstrap',
-                                    ],
-                                ],
-                            ],
-                            'ai-instances-stats' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-instances/stats[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiInstance',
-                                        'action'        => 'stats',
-                                    ],
-                                ],
-                            ],
-                            'ai-instances-list' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-instances/list[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiInstance',
-                                        'action'        => 'list',
-                                    ],
-                                ],
-                            ],
-                            'ai-instances-save' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-instances/save[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiInstance',
-                                        'action'        => 'save',
-                                    ],
-                                ],
-                            ],
-                            'ai-instances-delete' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'       => '/ai-instances/delete/:id',
-                                    'constraints' => ['id' => '[0-9]+'],
-                                    'defaults'    => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiInstance',
-                                        'action'        => 'delete',
-                                    ],
-                                ],
-                            ],
-                            'ai-instances-item' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'       => '/ai-instances/:id',
-                                    'constraints' => ['id' => '[0-9]+'],
-                                    'defaults'    => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiInstance',
-                                        'action'        => 'get',
-                                    ],
-                                ],
-                            ],
-                            // ── MelisAI — MCP Server tab (exposition + sensitive tables) ──────────
-                            'ai-mcp-server-data' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-mcp-server/data[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiMcpServer',
-                                        'action'        => 'data',
-                                    ],
-                                ],
-                            ],
-                            'ai-mcp-server-save-tools' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-mcp-server/save-tools[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiMcpServer',
-                                        'action'        => 'saveTools',
-                                    ],
-                                ],
-                            ],
-                            'ai-mcp-server-save-sensitive' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-mcp-server/save-sensitive[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiMcpServer',
-                                        'action'        => 'saveSensitive',
-                                    ],
-                                ],
-                            ],
-                            // ── MelisAI — Platform AI tab (native React form, save reuses legacy) ──
-                            'ai-platform-data' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/ai-platform/data[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiPlatform',
-                                        'action'        => 'data',
-                                    ],
-                                ],
-                            ],
-                            // ── MelisAI — MCP Inspector tool (native React, stateless process launcher) ──
-                            'mcp-inspector-servers' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/mcp-inspector/servers[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiMcpInspector',
-                                        'action'        => 'servers',
-                                    ],
-                                ],
-                            ],
-                            'mcp-inspector-launch' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/mcp-inspector/launch[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiMcpInspector',
-                                        'action'        => 'apiLaunch',
-                                    ],
-                                ],
-                            ],
-                            'mcp-inspector-status' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/mcp-inspector/status[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiMcpInspector',
-                                        'action'        => 'apiStatus',
-                                    ],
-                                ],
-                            ],
-                            'mcp-inspector-log' => [
-                                'type'    => 'Segment',
-                                'options' => [
-                                    'route'    => '/mcp-inspector/log[/]',
-                                    'defaults' => [
-                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiMcpInspector',
-                                        'action'        => 'log',
-                                    ],
-                                ],
-                            ],
-                            // ── MelisAI — AI Agents (native React tool, UI via the MelisAI brick) ──
-                            // Backend lives here in the shared MelisReactApi layer (origin pattern); the
-                            // controller resolves MelisAI services at runtime (only reachable when MelisAI
-                            // is active). Order: /stats /options /save /scenario/* /chat/* BEFORE /:id.
-                            'agents-list' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'list']],
-                            ],
-                            'agents-stats' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/stats[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'stats']],
-                            ],
-                            'agents-options' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/options[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'options']],
-                            ],
-                            'agents-scenario-list' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/scenario/list[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'scenarioList']],
-                            ],
-                            'agents-scenario-options' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/scenario/options[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'scenarioOptions']],
-                            ],
-                            'agents-scenario-forms' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/scenario/forms[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'scenarioForms']],
-                            ],
-                            'agents-scenario-elements' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/scenario/elements[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'scenarioElements']],
-                            ],
-                            'agents-scenario-step' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/scenario/step/:id', 'constraints' => ['id' => '[0-9]+'], 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'scenarioStep']],
-                            ],
-                            'agents-save' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/save[/]', 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'save']],
-                            ],
-                            'agents-delete' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/delete/:id', 'constraints' => ['id' => '[0-9]+'], 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'delete']],
-                            ],
-                            'agents-db-rights' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/db-rights/:id', 'constraints' => ['id' => '[0-9]+'], 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'dbRights']],
-                            ],
-                            'agents-item' => [
-                                'type'    => 'Segment',
-                                'options' => ['route' => '/agents/:id', 'constraints' => ['id' => '[0-9]+'], 'defaults' => ['__NAMESPACE__' => 'MelisReactApi\Controller', 'controller' => 'MelisReactApiAiAgent', 'action' => 'get']],
-                            ],
                             // ── Site Redirects 301 (MelisCms tool, UI via brick) ──
                             'site-redirects-list' => [
                                 'type'    => 'Segment',
@@ -1014,93 +803,131 @@ return [
                                     ],
                                 ],
                             ],
-                            // ── MelisAI — Chat Dev Tool tab (native React) ───────────────────
-                            'ai-chat-dev-agents' => [
+                            // ── Slider (MelisCmsSlider tool, UI via brick) — slider > slides > slide ──
+                            // Ordre : routes spécifiques AVANT la catch-all /sliders/:id.
+                            'sliders-list' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-chat-dev/agents[/]',
+                                    'route'    => '/sliders[/]',
                                     'defaults' => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiChatDev',
-                                        'action'        => 'agents',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'list',
                                     ],
                                 ],
                             ],
-                            'ai-chat-dev-run' => [
+                            'sliders-stats' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-chat-dev/run[/]',
+                                    'route'    => '/sliders/stats[/]',
                                     'defaults' => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiChatDev',
-                                        'action'        => 'run',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'stats',
                                     ],
                                 ],
                             ],
-                            'ai-chat-dev-continue' => [
+                            'sliders-save' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-chat-dev/continue[/]',
+                                    'route'    => '/sliders/save[/]',
                                     'defaults' => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiChatDev',
-                                        'action'        => 'continue',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'save',
                                     ],
                                 ],
                             ],
-                            // ── MelisAIEngine — general chat container (replaces MelisAIChatViewHelper) ──
-                            'ai-engine-init' => [
+                            'sliders-slides-reorder' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-engine/init[/]',
+                                    'route'    => '/sliders/slides/reorder[/]',
                                     'defaults' => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiEngine',
-                                        'action'        => 'init',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'reorder',
                                     ],
                                 ],
                             ],
-                            'ai-engine-run' => [
+                            'sliders-slide-upload' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-engine/run[/]',
+                                    'route'    => '/sliders/slide/upload[/]',
                                     'defaults' => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiEngine',
-                                        'action'        => 'run',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'slideUpload',
                                     ],
                                 ],
                             ],
-                            'ai-engine-continue' => [
+                            'sliders-slide-save' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-engine/continue[/]',
+                                    'route'    => '/sliders/slide/save[/]',
                                     'defaults' => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiEngine',
-                                        'action'        => 'continue',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'slideSave',
                                     ],
                                 ],
                             ],
-                            'ai-engine-restart' => [
+                            'sliders-slide-delete' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-engine/restart[/]',
-                                    'defaults' => [
+                                    'route'       => '/sliders/slide/delete/:id',
+                                    'constraints' => ['id' => '[0-9]+'],
+                                    'defaults'    => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiEngine',
-                                        'action'        => 'restart',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'slideDelete',
                                     ],
                                 ],
                             ],
-                            'ai-engine-validate' => [
+                            'sliders-slide-item' => [
                                 'type'    => 'Segment',
                                 'options' => [
-                                    'route'    => '/ai-engine/validate[/]',
-                                    'defaults' => [
+                                    'route'       => '/sliders/slide/:id',
+                                    'constraints' => ['id' => '[0-9]+'],
+                                    'defaults'    => [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
-                                        'controller'    => 'MelisReactApiAiEngine',
-                                        'action'        => 'validate',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'slideGet',
+                                    ],
+                                ],
+                            ],
+                            'sliders-delete' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'       => '/sliders/delete/:id',
+                                    'constraints' => ['id' => '[0-9]+'],
+                                    'defaults'    => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'delete',
+                                    ],
+                                ],
+                            ],
+                            'sliders-slides' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'       => '/sliders/:id/slides[/]',
+                                    'constraints' => ['id' => '[0-9]+'],
+                                    'defaults'    => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'slides',
+                                    ],
+                                ],
+                            ],
+                            'sliders-item' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'       => '/sliders/:id',
+                                    'constraints' => ['id' => '[0-9]+'],
+                                    'defaults'    => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiCmsSlider',
+                                        'action'        => 'get',
                                     ],
                                 ],
                             ],
@@ -1159,6 +986,17 @@ return [
                                         '__NAMESPACE__' => 'MelisReactApi\Controller',
                                         'controller'    => 'MelisReactApiTemplate',
                                         'action'        => 'get',
+                                    ],
+                                ],
+                            ],
+                            'templates-save' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'    => '/templates/save[/]',
+                                    'defaults' => [
+                                        '__NAMESPACE__' => 'MelisReactApi\Controller',
+                                        'controller'    => 'MelisReactApiTemplate',
+                                        'action'        => 'save',
                                     ],
                                 ],
                             ],
@@ -1358,16 +1196,10 @@ return [
             'MelisReactApi\Controller\MelisReactApiTemplate'     => \MelisReactApi\Controller\MelisReactApiTemplateController::class,
             'MelisReactApi\Controller\MelisReactApiCmsLanguage'   => \MelisReactApi\Controller\MelisReactApiCmsLanguageController::class,
             'MelisReactApi\Controller\MelisReactApiCmsPlatformId' => \MelisReactApi\Controller\MelisReactApiCmsPlatformIdController::class,
-            'MelisReactApi\Controller\MelisReactApiCmsStyle'          => \MelisReactApi\Controller\MelisReactApiCmsStyleController::class,
+            'MelisReactApi\Controller\MelisReactApiCmsStyle'      => \MelisReactApi\Controller\MelisReactApiCmsStyleController::class,
+            'MelisReactApi\Controller\MelisReactApiAuth'           => \MelisReactApi\Controller\MelisReactApiAuthController::class,
             'MelisReactApi\Controller\MelisReactApiCmsMiniTemplate'   => \MelisReactApi\Controller\MelisReactApiCmsMiniTemplateController::class,
-            'MelisReactApi\Controller\MelisReactApiAiUsage'      => \MelisReactApi\Controller\MelisReactApiAiUsageController::class,
-            'MelisReactApi\Controller\MelisReactApiAiPlatform'   => \MelisReactApi\Controller\MelisReactApiAiPlatformController::class,
-            'MelisReactApi\Controller\MelisReactApiAiInstance'      => \MelisReactApi\Controller\MelisReactApiAiInstanceController::class,
-            'MelisReactApi\Controller\MelisReactApiAiMcpServer'      => \MelisReactApi\Controller\MelisReactApiAiMcpServerController::class,
-            'MelisReactApi\Controller\MelisReactApiMcpInspector'    => \MelisReactApi\Controller\MelisReactApiMcpInspectorController::class,
-            'MelisReactApi\Controller\MelisReactApiAiChatDev'        => \MelisReactApi\Controller\MelisReactApiAiChatDevController::class,
-            'MelisReactApi\Controller\MelisReactApiAiEngine'          => \MelisReactApi\Controller\MelisReactApiAiEngineController::class,
-            'MelisReactApi\Controller\MelisReactApiAiAgent'      => \MelisReactApi\Controller\MelisReactApiAiAgentController::class,
+            'MelisReactApi\Controller\MelisReactApiCmsSlider'      => \MelisReactApi\Controller\MelisReactApiCmsSliderController::class,
         ],
     ],
     // La déclaration des capacités d'outils vit dans un fichier SÉPARÉ par module
