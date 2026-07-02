@@ -299,6 +299,12 @@ class MelisReactApiAiInstanceController extends MelisAbstractActionController
                 return $this->jsonResponse(['success' => false, 'error' => 'Invalid ID'], 400);
             }
             $db = $this->getServiceManager()->get('Laminas\Db\Adapter\AdapterInterface');
+            $existing = iterator_to_array($db->query(
+                'SELECT mai_instance_id FROM melis_ai_instances WHERE mai_id = ?', [$id]
+            ));
+            if ($existing && in_array((string) $existing[0]['mai_instance_id'], self::PROTECTED_IDS, true)) {
+                return $this->jsonResponse(['success' => false, 'error' => 'This instance is protected and cannot be deleted'], 400);
+            }
             // Translations cascade on DB level (FK); delete translations first if no cascade
             $db->query('DELETE FROM melis_ai_instance_trans WHERE mait_mai_id = ?', [$id]);
             $db->query('DELETE FROM melis_ai_instances WHERE mai_id = ?', [$id]);
