@@ -12,6 +12,12 @@ class Module
         $eventManager        = $e->getApplication()->getEventManager();
         $moduleRouteListener = new ModuleRouteListener();
         $moduleRouteListener->attach($eventManager);
+
+        // NB : la préservation des capacités d'outils (section <meliscore_tool_capabilities>) à la
+        // sauvegarde par l'ANCIEN BO est désormais assurée PAR LES MODULES concernés (modularité) :
+        //  - USER  → MelisCore\Listener\MelisReactApiCapabilityPreserveUserListener
+        //  - RÔLE  → MelisSmallBusiness\Listener\MelisReactApiCapabilityPreserveRoleListener
+        // Le moteur de capacités (Service\Capabilities) reste ici, générique.
     }
 
     public function getConfig()
