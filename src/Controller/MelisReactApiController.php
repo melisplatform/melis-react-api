@@ -4,6 +4,7 @@ namespace MelisReactApi\Controller;
 
 use Laminas\Http\PhpEnvironment\Response as HttpResponse;
 use MelisCore\Controller\MelisAbstractActionController;
+use MelisReactApi\Service\Capabilities;
 
 /**
  * API JSON pour le backoffice React.
@@ -29,25 +30,53 @@ class MelisReactApiController extends MelisAbstractActionController
         $user = $this->getAuthStorage();
 
         // Current user's profile picture (usr_image blob) as a data URI, like the legacy header.
-        $picture = null;
+        // + capacités d'outils effectives (droits avancés React) ; admin ⇒ tout permis.
+        $picture      = null;
+        $isAdmin      = false;
+        $capabilities = [];
         try {
-            $identity = $this->getServiceManager()->get('MelisCoreAuth')->getIdentity();
+            $sm       = $this->getServiceManager();
+            $auth     = $sm->get('MelisCoreAuth');
+            $identity = $auth->getIdentity();
             if (!empty($identity->usr_image)) {
                 $picture = 'data:image/jpeg;base64,' . base64_encode($identity->usr_image);
             }
+            $isAdmin      = !empty($identity->usr_admin);
+            $capabilities = Capabilities::allowedForUser($sm->get('config'), $isAdmin ? null : $auth->getAuthRights());
         } catch (\Throwable) {
         }
 
         return $this->jsonResponse([
             'success' => true,
             'data'    => [
-                'id'      => (int) ($user->usr_id ?? 0),
-                'name'    => trim(($user->usr_firstname ?? '') . ' ' . ($user->usr_lastname ?? '')),
-                'login'   => $user->usr_login ?? '',
-                'email'   => $user->usr_email ?? '',
-                'picture' => $picture,
+                'id'           => (int) ($user->usr_id ?? 0),
+                'name'         => trim(($user->usr_firstname ?? '') . ' ' . ($user->usr_lastname ?? '')),
+                'login'        => $user->usr_login ?? '',
+                'email'        => $user->usr_email ?? '',
+                'picture'      => $picture,
+                'isAdmin'      => $isAdmin,
+                'capabilities' => (object) $capabilities,
             ],
         ]);
+    }
+
+    // ─── /melis/react-api/rights/capabilities ────────────────────────────────
+
+    /**
+     * Capacités d'outils DÉCLARÉES par les modules (carte melisKey → [caps]) — alimente l'éditeur
+     * de droits (cases List/Create/Edit/Delete par outil). Réservé aux gestionnaires de droits.
+     */
+    public function rightsCapabilitiesAction(): HttpResponse
+    {
+        if (!$this->isAuthenticated()) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
+        }
+        try {
+            $declared = Capabilities::declared($this->getServiceManager()->get('config'));
+            return $this->jsonResponse(['success' => true, 'data' => (object) $declared]);
+        } catch (\Throwable $e) {
+            return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()], 500);
+        }
     }
 
     // ─── /melis/react-api/langs ──────────────────────────────────────────────
@@ -164,21 +193,37 @@ class MelisReactApiController extends MelisAbstractActionController
                 if (!is_array($manifest)) {
                     continue;
                 }
-                $entry = $manifest['entry'] ?? 'brick.js';
-                // Cache-bust: the bundle filename is not content-hashed, so append the
-                // built file's mtime — each rebuild yields a new URL and the browser
-                // never serves a stale brick.
-                $bundleFile = rtrim($path, '/\\') . '/public/ui-react/' . $entry;
-                $ver        = is_file($bundleFile) ? (string) filemtime($bundleFile) : '0';
-                $bricks[] = [
-                    'id'         => $manifest['id'] ?? strtolower($module),
-                    'module'     => $module,
-                    'route'      => $manifest['route'] ?? null,
-                    'label'      => $manifest['label'] ?? $module,
-                    'forwardKey' => $manifest['forwardKey'] ?? null,
-                    'melisKey'   => $manifest['melisKey'] ?? null,
-                    'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
-                ];
+                // A module may ship a SINGLE brick (manifest = one object) or MULTIPLE bricks
+                // (manifest with a `bricks` array — one tool per entry, all built into the same
+                // bundle which self-registers each by id). Normalise to a list of defs.
+                $defs = (isset($manifest['bricks']) && is_array($manifest['bricks']))
+                    ? $manifest['bricks']
+                    : [$manifest];
+
+                foreach ($defs as $def) {
+                    if (!is_array($def)) {
+                        continue;
+                    }
+                    $entry = $def['entry'] ?? $manifest['entry'] ?? 'brick.js';
+                    // Cache-bust: the bundle filename is not content-hashed, so append the
+                    // built file's mtime — each rebuild yields a new URL and the browser
+                    // never serves a stale brick.
+                    $bundleFile = rtrim($path, '/\\') . '/public/ui-react/' . $entry;
+                    $ver        = is_file($bundleFile) ? (string) filemtime($bundleFile) : '0';
+                    $bricks[] = [
+                        'id'         => $def['id'] ?? strtolower($module),
+                        'module'     => $module,
+                        'route'      => $def['route'] ?? null,
+                        'label'      => $def['label'] ?? $module,
+                        'forwardKey' => $def['forwardKey'] ?? null,
+                        'melisKey'   => $def['melisKey'] ?? null,
+                        // Opt-in to the host sub-tab pattern (native "User Management" look): the
+                        // host collapses /[section]/[tool]/:id to ONE tool tab + renders SubTabBar
+                        // for opened records. Off by default (a brick keeps a top tab per entity).
+                        'subTabs'    => (bool) ($def['subTabs'] ?? false),
+                        'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
+                    ];
+                }
             }
 
             return $this->jsonResponse(['success' => true, 'data' => $bricks]);
@@ -280,6 +325,297 @@ class MelisReactApiController extends MelisAbstractActionController
         return $this->jsonResponse(['success' => true, 'data' => $data]);
     }
 
+    // ─── /melis/react-api/dashboard/stats ────────────────────────────────────
+
+    /**
+     * KPI counts (users, sites, pages, languages) and recent login activity.
+     * Each figure degrades to 0 / empty when the underlying module is absent.
+     */
+    public function dashboardStatsAction(): HttpResponse
+    {
+        if (!$this->isAuthenticated()) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
+        }
+
+        $defaults = [
+            'kpis'     => ['users' => 0, 'sites' => 0, 'pages' => 0, 'languages' => 0],
+            'activity' => [],
+        ];
+
+        $sm = $this->getServiceManager();
+
+        // DB adapter — if unavailable, return safe defaults immediately.
+        $db = null;
+        try { $db = $sm->get('Laminas\Db\Adapter\AdapterInterface'); } catch (\Throwable) {}
+        if (!$db) {
+            return $this->jsonResponse(['success' => true, 'data' => $defaults]);
+        }
+
+        $countSql = static function (\Laminas\Db\Adapter\AdapterInterface $db, string $table): int {
+            try {
+                $rows = iterator_to_array($db->query("SELECT COUNT(*) AS c FROM `{$table}`", []));
+                return (int) (($rows[0] ?? [])['c'] ?? 0);
+            } catch (\Throwable) {
+                return 0;
+            }
+        };
+
+        $users     = $countSql($db, 'melis_core_user');
+        $languages = $countSql($db, 'melis_core_lang');
+
+        // Sites + pages counts (MelisCms only — table may not exist).
+        $sites = 0;
+        $pages = 0;
+        try {
+            if ($sm->has('MelisEngineTablePageSaved')) {
+                $all = $sm->get('MelisEngineTablePageSaved')->fetchAll();
+                foreach ((array) ($all ? $all->toArray() : []) as $p) {
+                    if (($p['page_type'] ?? '') === 'SITE') { $sites++; }
+                    if (($p['page_type'] ?? '') === 'PAGE') { $pages++; }
+                }
+            }
+        } catch (\Throwable) {}
+
+        // Recent activity — last N users to log in.
+        $activity = [];
+        try {
+            $results = $sm->get('MelisCoreTableUser')->getLastLoggedInUsers(8);
+            foreach ((array) ($results ? $results->toArray() : []) as $u) {
+                $name = trim(($u['usr_firstname'] ?? '') . ' ' . ($u['usr_lastname'] ?? ''));
+                $activity[] = [
+                    'id'        => (int) ($u['usr_id'] ?? 0),
+                    'name'      => $name !== '' ? $name : ($u['usr_login'] ?? 'User'),
+                    'loginDate' => $u['usr_last_login_date'] ?? null,
+                ];
+            }
+        } catch (\Throwable) {}
+
+        return $this->jsonResponse([
+            'success' => true,
+            'data'    => [
+                'kpis'     => ['users' => $users, 'sites' => $sites, 'pages' => $pages, 'languages' => $languages],
+                'activity' => $activity,
+            ],
+        ]);
+    }
+
+    // ─── /melis/react-api/dashboard/legacy-plugins ───────────────────────────
+
+    /**
+     * Returns the list of available legacy dashboard plugins (from Melis config)
+     * so the React dashboard palette can display and load them as iframe widgets.
+     *
+     * Each entry: { pluginName, title, icon, section, w, h }
+     */
+    public function legacyDashboardPluginsAction(): HttpResponse
+    {
+        if (!$this->isAuthenticated()) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
+        }
+
+        $sm     = $this->getServiceManager();
+        $config = null;
+        try { $config = $sm->get('MelisCoreConfig'); } catch (\Throwable) {}
+
+        if (!$config) {
+            return $this->jsonResponse(['success' => true, 'data' => []]);
+        }
+
+        // Explicit path: Utilities plugins register directly under meliscore.interface.melis_dashboardplugin,
+        // NOT under meliscore_leftmenu (app.toolstree.php's node is a different tree branch).
+        $section     = $config->getItem('/meliscore/interface/melis_dashboardplugin/interface/melisdashboardplugin_section');
+        $pluginNames = array_keys($section['interface'] ?? []);
+
+        $translationSvc = null;
+        try { $translationSvc = $sm->get('MelisCoreTranslation'); } catch (\Throwable) {}
+
+        $plugins = [];
+        foreach ($pluginNames as $pluginName) {
+            // conf.type → full path of the plugin entry (e.g. /checkwsstatus/interface/CheckWsStatusPlugin).
+            // getItem() with a melisKey also works here.
+            $typePath = $section['interface'][$pluginName]['conf']['type'] ?? null;
+            if (!$typePath) continue;
+
+            $pluginConfig = null;
+            try { $pluginConfig = $config->getItem($typePath); } catch (\Throwable) {}
+            if (empty($pluginConfig['datas'])) continue;
+
+            $datas = $pluginConfig['datas'];
+            $title = (string) ($datas['name'] ?? $pluginName);
+
+            if (str_starts_with($title, 'tr_') && $translationSvc) {
+                try {
+                    $translated = (string) $translationSvc->getMessage($title);
+                    if ($translated !== '') { $title = $translated; }
+                } catch (\Throwable) {}
+            }
+
+            $plugins[] = [
+                'pluginName' => $pluginName,
+                'title'      => $title ?: $pluginName,
+                'icon'       => (string) ($datas['icon'] ?? ''),
+                'section'    => (string) ($datas['section'] ?? 'Plugins'),
+                'w'          => (int) ($datas['width']  ?? 6),
+                'h'          => (int) ($datas['height'] ?? 4),
+            ];
+        }
+
+        return $this->jsonResponse(['success' => true, 'data' => $plugins]);
+    }
+
+    // ─── /melis/react-api/rights/dashboard-plugins ───────────────────────────
+
+    /**
+     * Authoritative list of dashboard plugins for the user-RIGHTS editor, in module-merge order
+     * (MelisCore first, then MelisCms, then any other module — same order the legacy rights tree
+     * uses). Reuses MelisCoreDashboardPluginsRightsService::getRightsValues, whose children are
+     * built per module via getMelisKeyPaths(); we drop the per-user `selected` flag (React derives
+     * the checked state from the usr_rights XML <melis_dashboardplugin> section).
+     *
+     * Each entry: { key, title }.
+     */
+    public function rightsDashboardPluginsAction(): HttpResponse
+    {
+        if (!$this->isAuthenticated()) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
+        }
+
+        $sm = $this->getServiceManager();
+        $userId = (int) $this->params()->fromQuery('userId', 0);
+        if (!$userId) {
+            try { $userId = (int) ($sm->get('MelisCoreAuth')->getIdentity()->usr_id ?? 0); } catch (\Throwable) {}
+        }
+
+        $items = [];
+        try {
+            // alias defined in melis-core module.config.php → MelisCoreDashboardPluginsRightsService
+            $rights = $sm->get('MelisCoreDashboardPluginsService')->getRightsValues($userId);
+
+            // The dashboard section is MERGED across modules, so the rights data doesn't carry the
+            // owning module. Resolve it from each plugin's controller-plugin class namespace (1st
+            // segment). Dashboard plugins register under `controller_plugins`, NOT `controllers`.
+            $appConfig = $sm->get('config');
+            $cp = $appConfig['controller_plugins'] ?? [];
+            $ctrls = array_merge(
+                $cp['factories']  ?? [],
+                $cp['invokables'] ?? [],
+                $cp['aliases']    ?? []
+            );
+
+            foreach (($rights[0]['children'] ?? []) as $c) {
+                if (empty($c['key'])) { continue; }
+                $key    = (string) $c['key'];
+                $class  = (string) ($ctrls[$key] ?? '');
+                $module = $class ? explode('\\', ltrim($class, '\\'))[0] : '';
+                $items[] = [
+                    'key'    => $key,
+                    'title'  => (string) ($c['title'] ?? $key),
+                    'module' => $module,
+                ];
+            }
+        } catch (\Throwable) {}
+
+        return $this->jsonResponse(['success' => true, 'data' => $items]);
+    }
+
+    // ─── /melis/react-api/dashboard/layout ───────────────────────────────────
+
+    /**
+     * GET  → returns the saved React dashboard layout (JSON array of GridItems) from melis_core_dashboards.
+     * POST → receives a JSON array of GridItems, converts to XML, saves to melis_core_dashboards.
+     *
+     * Uses dashboard_id = 'react_dashboard' so it never collides with the legacy PHP dashboard.
+     * XML format is intentionally compatible with the legacy savePlugins() schema so the table stays homogeneous.
+     */
+    public function dashboardLayoutAction(): HttpResponse
+    {
+        if (!$this->isAuthenticated()) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
+        }
+
+        $sm          = $this->getServiceManager();
+        $dashboardId = 'react_dashboard';
+
+        $userId = 0;
+        try { $userId = (int) $this->getAuthStorage()->usr_id; } catch (\Throwable) {}
+
+        $tbl = null;
+        try { $tbl = $sm->get('MelisCoreDashboardsTable'); } catch (\Throwable) {}
+
+        if (!$tbl) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Dashboard table unavailable']);
+        }
+
+        $request = $this->getRequest();
+
+        // ── GET: load ────────────────────────────────────────────────────────
+        if ($request->isGet()) {
+            try {
+                $row = $tbl->getDashboardPlugins($dashboardId, $userId)->current();
+                if (empty($row->d_content)) {
+                    return $this->jsonResponse(['success' => true, 'data' => null]);
+                }
+                $xml   = simplexml_load_string($row->d_content);
+                $items = [];
+                if ($xml && $xml->plugin) {
+                    foreach ($xml->plugin as $p) {
+                        $id = (string) $p['plugin_id'];
+                        $items[] = [
+                            'i' => $id,
+                            'x' => (int) $p->{'x-axis'},
+                            'y' => (int) $p->{'y-axis'},
+                            'w' => (int) $p->{'width'},
+                            'h' => (int) $p->{'height'},
+                        ];
+                    }
+                }
+                return $this->jsonResponse(['success' => true, 'data' => $items]);
+            } catch (\Throwable $e) {
+                return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()]);
+            }
+        }
+
+        // ── POST: save ───────────────────────────────────────────────────────
+        if ($request->isPost()) {
+            try {
+                $body  = (string) $request->getContent();
+                $items = json_decode($body, true);
+                if (!is_array($items)) {
+                    return $this->jsonResponse(['success' => false, 'error' => 'Invalid payload'], 400);
+                }
+
+                $pluginXmlData = '';
+                foreach ($items as $item) {
+                    $id = htmlspecialchars((string) ($item['i'] ?? ''), ENT_XML1);
+                    if (!$id) continue;
+                    $x = (int) ($item['x'] ?? 0);
+                    $y = (int) ($item['y'] ?? 0);
+                    $w = (int) ($item['w'] ?? 1);
+                    $h = (int) ($item['h'] ?? 1);
+                    $pluginXmlData .= "\n<plugin plugin=\"{$id}\" plugin_id=\"{$id}\">"
+                        . "\n\t<x-axis><![CDATA[{$x}]]></x-axis>"
+                        . "\n\t<y-axis><![CDATA[{$y}]]></y-axis>"
+                        . "\n\t<height><![CDATA[{$h}]]></height>"
+                        . "\n\t<width><![CDATA[{$w}]]></width>"
+                        . "\n</plugin>";
+                }
+                $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n<Plugins>{$pluginXmlData}\n</Plugins>";
+
+                $existing      = $tbl->getDashboardPlugins($dashboardId, $userId)->current();
+                $existingId    = $existing ? ($existing->d_id ?? null) : null;
+                $tbl->save(
+                    ['d_dashboard_id' => $dashboardId, 'd_user_id' => $userId, 'd_content' => $xml],
+                    $existingId
+                );
+                return $this->jsonResponse(['success' => true]);
+            } catch (\Throwable $e) {
+                return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return $this->jsonResponse(['success' => false, 'error' => 'Method not allowed'], 405);
+    }
+
     // ─── /melis/react-api/menu ───────────────────────────────────────────────
 
     public function menuAction(): HttpResponse
@@ -288,8 +624,16 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // `?full=1` returns the UNFILTERED tool tree — used ONLY by the user-rights editor, which
+        // must show every tool to be able to grant it (not just the editor's own tools). Restricted
+        // to users who can manage user rights.
+        $full = $this->params()->fromQuery('full', '') === '1';
+        if ($full && !$this->getServiceManager()->get('MelisCoreRights')->canAccess('meliscore_tool_user')) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Forbidden'], 403);
+        }
+
         try {
-            return $this->buildMenuResponse();
+            return $this->buildMenuResponse($full);
         } catch (\Throwable $e) {
             return $this->jsonResponse([
                 'success' => false,
@@ -303,12 +647,32 @@ class MelisReactApiController extends MelisAbstractActionController
         }
     }
 
-    private function buildMenuResponse(): HttpResponse
+    /** @var \MelisCore\Service\MelisCoreConfigService|null Config service, stashed for buildLevel2/3 melisKey resolution. */
+    private $menuConfig = null;
+    /** @var array melisKey => config path map, stashed for buildLevel2/3. */
+    private array $menuMelisKeys = [];
+
+    private function buildMenuResponse(bool $full = false): HttpResponse
     {
         $sm          = $this->getServiceManager();
         $melisConfig = $sm->get('MelisCoreConfig');
-        $melisRights = $sm->get('MelisCoreRights');
+        // $full → permissive rights provider so the whole tool tree is returned (rights editor).
+        $melisRights = $full
+            ? new class { public function canAccess($key): bool { return true; } }
+            : $sm->get('MelisCoreRights');
+        // MelisCoreRightsService::getMelisKeyPaths() lists only the 7 hardcoded core sections.
+        // Newly-installed module sections (e.g. melisai_toolstree_section) are not in that list,
+        // so canAccess() always returns false for their tools, hiding the entire section.
+        // We detect those "unknown" sections and use permissive rights for them so active
+        // modules registered outside the core section list are visible.
+        $knownSectionKeys = (!$full && method_exists($melisRights, 'getMelisKeyPaths'))
+            ? $melisRights->getMelisKeyPaths()
+            : null;
         $melisKeys   = $melisConfig->getMelisKeys();
+        $this->menuConfig     = $melisConfig;
+        $this->menuMelisKeys  = $melisKeys;
+        $transSvc    = null;
+        try { $transSvc = $sm->get('MelisCoreTranslation'); } catch (\Throwable) {}
 
         // Découverte dynamique de toutes les sections enregistrées dans le leftmenu.
         $leftMenuInterface = $melisConfig->getItem(
@@ -351,9 +715,9 @@ class MelisReactApiController extends MelisAbstractActionController
                 continue;
             }
 
-            if (!$melisRights->canAccess($sectionKey)) {
-                continue;
-            }
+            // NOTE: do NOT canAccess() the section here. A top section is a CONTAINER, never granted
+            // by per-tool rights, so checking it would wrongly hide the whole section. Visibility is
+            // decided by its children: empty $categories below → the section is pruned.
 
             if (empty($melisKeys[$sectionKey])) {
                 continue;
@@ -361,19 +725,49 @@ class MelisReactApiController extends MelisAbstractActionController
 
             $sectionConfig = $melisConfig->getItem($melisKeys[$sectionKey]);
 
-            if (empty($sectionConfig['interface'])) {
+            $sectionName = $sectionConfig['conf']['name'] ?? $sectionKey;
+            $sectionIcon = $sectionConfig['conf']['icon'] ?? '';
+
+            // Sections with is_parent_tool:true are directly clickable (they open a specific
+            // tool via target_meliskey) and have no nav children — emit as a leaf tool node.
+            if (!empty($sectionConfig['conf']['is_parent_tool'])) {
+                $targetMelisKey = $sectionConfig['conf']['target_meliskey'] ?? ($sectionConfig['conf']['melisKey'] ?? $sectionKey);
+                // Resolve the target tool's forward so the React nav can route it correctly.
+                $targetConfig = !empty($melisKeys[$targetMelisKey])
+                    ? $melisConfig->getItem($melisKeys[$targetMelisKey])
+                    : [];
+                $displayName = $sectionName;
+                if ($transSvc && str_starts_with((string)$displayName, 'tr_')) {
+                    try { $t = (string)$transSvc->getMessage($displayName); if ($t !== '') $displayName = $t; } catch (\Throwable) {}
+                }
+                $menu[] = [
+                    'key'         => $sectionKey,
+                    'name'        => $displayName,
+                    'icon'        => $sectionConfig['conf']['icon'] ?? ($sectionConfig['conf']['tab_icon'] ?? ''),
+                    'melisKey'    => $targetMelisKey,
+                    'isTool'      => true,
+                    'forward'     => $targetConfig['forward'] ?? [],
+                    'hasNavChild' => false,
+                    'children'    => [],
+                ];
                 continue;
             }
 
-            $sectionName = $sectionConfig['conf']['name'] ?? $sectionKey;
-            $sectionIcon = $sectionConfig['conf']['icon'] ?? '';
+            if (empty($sectionConfig['interface'])) {
+                continue;
+            }
 
             $orderedInterface = $this->applyOrdering(
                 $sectionConfig['interface'],
                 $melisConfig->getOrderInterfaceConfig($sectionKey)
             );
 
-            $categories = $this->buildLevel2($orderedInterface, $melisRights);
+            // For sections not registered in getMelisKeyPaths(), canAccess() always returns false.
+            // Use permissive rights for those so newly-added module sections remain visible.
+            $effectiveRights = ($knownSectionKeys !== null && !in_array($sectionKey, $knownSectionKeys, true))
+                ? new class { public function canAccess(string $key): bool { return true; } }
+                : $melisRights;
+            $categories = $this->buildLevel2($orderedInterface, $effectiveRights);
 
             if (empty($categories)) {
                 continue;
@@ -387,6 +781,10 @@ class MelisReactApiController extends MelisAbstractActionController
                 'isTool'      => !empty($sectionConfig['forward']),
                 'forward'     => $sectionConfig['forward'] ?? [],
                 'hasNavChild' => true,
+                // UNFILTERED child count (before rights filtering). The React nav collapses a single-tool
+                // wrapper (e.g. "SLIDER" → "Slider") but must NOT collapse a multi-tool category that the
+                // current user only has 1 tool granted in (e.g. "Administration") — it relies on this.
+                'configChildCount' => count($orderedInterface),
                 'children'    => $categories,
             ];
         }
@@ -401,7 +799,15 @@ class MelisReactApiController extends MelisAbstractActionController
         $categories = [];
 
         foreach ($interface as $catKey => $catConfig) {
-            if (!$melisRights->canAccess($catKey)) {
+            // Only gate a category by canAccess when it is itself a TOOL (has a forward). A plain
+            // container category isn't granted by per-tool rights — its visibility comes from its
+            // tools (buildLevel3 + the empty-prune below).
+            // Check rights on the resolved melisKey, NOT the leftmenu array key: the rights XML
+            // stores grants by melisKey, and the two differ for some modules (e.g. MelisSmallBusiness'
+            // leftmenu key `melisSB_tool_userrole` vs melisKey `melissb_tool_userrole`) — using the
+            // array key would wrongly hide the tool for everyone, admin included.
+            $catAccessKey = $catConfig['conf']['melisKey'] ?? $catKey;
+            if (!empty($catConfig['forward']) && !$melisRights->canAccess($catAccessKey)) {
                 continue;
             }
             if (!($catConfig['conf']['left_menu_display'] ?? true)) {
@@ -416,7 +822,25 @@ class MelisReactApiController extends MelisAbstractActionController
             if (!empty($catConfig['interface'])) {
                 $tools       = $this->buildLevel3($catConfig['interface'], $melisRights);
                 $hasNavChild = !empty($tools);
-            } elseif (!empty($catConfig['forward'])) {
+            }
+
+            // Fallback for the MelisCommerce leftmenu pattern: categories are declared via a `conf.type`
+            // link whose target carries only conf (name/icon/melisKey). getItem() merges that conf but
+            // DROPS the node's original `forward`, so the resolved category ends up with no navigable
+            // children AND no forward — the prune below would then discard it (and, once all its
+            // siblings are gone, the entire section). When the melisKey resolves to a real tool that
+            // still carries a forward, adopt it so the category surfaces as a clickable leaf tool.
+            if (!$hasNavChild && empty($catConfig['forward'])) {
+                $mk = $catConfig['conf']['melisKey'] ?? null;
+                if ($mk && !empty($this->menuMelisKeys[$mk]) && $this->menuConfig) {
+                    $toolCfg = $this->menuConfig->getItem($this->menuMelisKeys[$mk]);
+                    if (!empty($toolCfg['forward'])) {
+                        $catConfig['forward'] = $toolCfg['forward'];
+                    }
+                }
+            }
+
+            if (!$hasNavChild && !empty($catConfig['forward'])) {
                 $tools = [[
                     'key'         => $catKey,
                     'name'        => $catName,
@@ -442,6 +866,9 @@ class MelisReactApiController extends MelisAbstractActionController
                 'isTool'      => !empty($catConfig['forward']),
                 'forward'     => $catConfig['forward'] ?? [],
                 'hasNavChild' => $hasNavChild,
+                // Unfiltered tool count for this category (see section node note): the nav must keep the
+                // "Administration" header even when only 1 of its 4 tools is granted to the user.
+                'configChildCount' => count($catConfig['interface'] ?? []),
                 'children'    => $tools,
             ];
         }
@@ -454,7 +881,10 @@ class MelisReactApiController extends MelisAbstractActionController
         $tools = [];
 
         foreach ($interface as $toolKey => $toolConfig) {
-            if (!$melisRights->canAccess($toolKey)) {
+            // Rights are keyed by melisKey, which can differ from the leftmenu array key
+            // (case/prefix mismatch for some modules — see buildLevel2 note). Use the melisKey.
+            $toolAccessKey = $toolConfig['conf']['melisKey'] ?? $toolKey;
+            if (!$melisRights->canAccess($toolAccessKey)) {
                 continue;
             }
             if (!($toolConfig['conf']['left_menu_display'] ?? true)) {
@@ -470,7 +900,8 @@ class MelisReactApiController extends MelisAbstractActionController
                     if (empty($subConfig['conf']['icon'])) {
                         continue;
                     }
-                    if (!$melisRights->canAccess($subKey)) {
+                    $subAccessKey = $subConfig['conf']['melisKey'] ?? $subKey;
+                    if (!$melisRights->canAccess($subAccessKey)) {
                         continue;
                     }
                     $subTools[] = [
@@ -487,6 +918,13 @@ class MelisReactApiController extends MelisAbstractActionController
                 }
             }
 
+            // Skip a non-navigable leaf: no forward (nothing to open) and no sub-tools. Some modules
+            // register placeholder leftmenu entries (e.g. MelisSmallBusiness' "Media library", opened
+            // from within the media field — not the left menu) — don't surface a dead, unclickable item.
+            if (empty($toolConfig['forward']) && !$hasNavChild) {
+                continue;
+            }
+
             $tools[] = [
                 'key'         => $toolKey,
                 'name'        => $toolConfig['conf']['name'] ?? $toolKey,
@@ -495,6 +933,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 'isTool'      => !empty($toolConfig['forward']),
                 'forward'     => $toolConfig['forward'] ?? [],
                 'hasNavChild' => $hasNavChild,
+                'configChildCount' => count($toolConfig['interface'] ?? []),
                 'children'    => $subTools,
             ];
         }
