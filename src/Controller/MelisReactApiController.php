@@ -27,6 +27,11 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // Free the PHP session lock BEFORE the (potentially slow) capabilities computation so this
+        // read-only endpoint doesn't serialise every other request sharing the session cookie
+        // (see releaseSessionLock()).
+        $this->releaseSessionLock();
+
         $user = $this->getAuthStorage();
 
         // Current user's profile picture (usr_image blob) as a data URI, like the legacy header.
@@ -42,7 +47,18 @@ class MelisReactApiController extends MelisAbstractActionController
                 $picture = 'data:image/jpeg;base64,' . base64_encode($identity->usr_image);
             }
             $isAdmin      = !empty($identity->usr_admin);
-            $capabilities = Capabilities::allowedForUser($sm->get('config'), $isAdmin ? null : $auth->getAuthRights());
+            if ($isAdmin) {
+                // Admin ⇒ tout permis (aucun droit à résoudre).
+                $capabilities = Capabilities::allowedForUser($sm->get('config'), null);
+            } else {
+                // Sert les capacités depuis le cache de droits résolu (même choke point que le menu) ;
+                // fallback sur le calcul live si le cache est indisponible.
+                $resolved = null;
+                try { $resolved = $sm->get('MelisCoreRights')->getResolvedRights(); } catch (\Throwable) {}
+                $capabilities = (is_array($resolved) && isset($resolved['caps']) && is_array($resolved['caps']))
+                    ? $resolved['caps']
+                    : Capabilities::allowedForUser($sm->get('config'), $auth->getAuthRights());
+            }
         } catch (\Throwable) {
         }
 
@@ -77,9 +93,14 @@ class MelisReactApiController extends MelisAbstractActionController
             $declared = Capabilities::declared($this->getServiceManager()->get('config'));
             $transSvc = null;
             try { $transSvc = $this->getServiceManager()->get('MelisCoreTranslation'); } catch (\Throwable) {}
+            // getMessage() defaults to 'en_EN' when no locale is passed — read the current
+            // session locale explicitly (same source langsAction() uses) so tab labels follow
+            // the admin's actual back-office language instead of always resolving to English.
+            $localeContainer = new \Laminas\Session\Container('meliscore');
+            $currentLocale   = (string) ($localeContainer['melis-lang-locale'] ?? 'en_EN');
             $out = [];
             foreach ($declared as $key => $val) {
-                $out[$key] = $this->translateCapLabels($val, $transSvc);
+                $out[$key] = $this->translateCapLabels($val, $transSvc, $currentLocale);
             }
             return $this->jsonResponse(['success' => true, 'data' => (object) $out]);
         } catch (\Throwable $e) {
@@ -88,18 +109,18 @@ class MelisReactApiController extends MelisAbstractActionController
     }
 
     /** Traduit récursivement les `label` (clés `tr_...`) d'un nœud de capacités ; laisse les listes plates intactes. */
-    private function translateCapLabels($node, $transSvc)
+    private function translateCapLabels($node, $transSvc, $locale = 'en_EN')
     {
         // Scalaire, ou liste plate d'actions (indices séquentiels) → rien à traduire.
         if (!is_array($node) || array_values($node) === $node) {
             return $node;
         }
         if (isset($node['label']) && is_string($node['label']) && str_starts_with($node['label'], 'tr_') && $transSvc) {
-            try { $t = (string) $transSvc->getMessage($node['label']); if ($t !== '') { $node['label'] = $t; } } catch (\Throwable) {}
+            try { $t = (string) $transSvc->getMessage($node['label'], $locale); if ($t !== '') { $node['label'] = $t; } } catch (\Throwable) {}
         }
         if (isset($node['tabs']) && is_array($node['tabs'])) {
             $node['tabs'] = array_map(
-                fn ($tab) => is_string($tab) ? $tab : $this->translateCapLabels($tab, $transSvc),
+                fn ($tab) => is_string($tab) ? $tab : $this->translateCapLabels($tab, $transSvc, $locale),
                 $node['tabs']
             );
         }
@@ -481,6 +502,9 @@ class MelisReactApiController extends MelisAbstractActionController
                 'pluginName' => $pluginName,
                 'title'      => $title ?: $pluginName,
                 'icon'       => (string) ($datas['icon'] ?? ''),
+                // Thumbnail screenshot shown in the legacy plugin picker (dashboard-menu-content.phtml) —
+                // forwarded as-is so the React palette can show the same image instead of a generic icon.
+                'thumbnail'  => (string) ($datas['thumbnail'] ?? ''),
                 'section'    => (string) ($datas['section'] ?? 'Plugins'),
                 'w'          => (int) ($datas['width']  ?? 6),
                 'h'          => (int) ($datas['height'] ?? 4),
@@ -650,6 +674,11 @@ class MelisReactApiController extends MelisAbstractActionController
         if (!$this->isAuthenticated()) {
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
+
+        // Free the PHP session lock BEFORE building the menu tree (canAccess over every tool can take
+        // seconds). Read-only endpoint → safe. Without this, a concurrent /users/:id edit fetch
+        // serialises behind /menu and the form spins / bounces back to the list (see releaseSessionLock()).
+        $this->releaseSessionLock();
 
         // `?full=1` returns the UNFILTERED tool tree — used ONLY by the user-rights editor, which
         // must show every tool to be able to grant it (not just the editor's own tools). Restricted
@@ -1017,5 +1046,24 @@ class MelisReactApiController extends MelisAbstractActionController
     private function getAuthStorage(): object
     {
         return $this->getServiceManager()->get('MelisCoreAuth')->getStorage()->read();
+    }
+
+    /**
+     * Release the PHP session lock early for a READ-ONLY endpoint.
+     *
+     * PHP holds an EXCLUSIVE lock on the session file from session_start() (done in bootstrap) until
+     * the script ends. Slow read-only endpoints — notably /me and /menu, which build the rights /
+     * capabilities / menu tree over every tool and can take several SECONDS — would otherwise
+     * serialise every other request sharing the same session cookie. In practice a user-edit fetch
+     * (GET /users/:id, ~10ms of work) blocks for seconds behind an in-flight /menu or /me, the form
+     * spins, and if the wait is interrupted the page bounces back to the list. Closing the session
+     * here frees the lock while $_SESSION stays readable in-memory (identity/rights reads still work);
+     * only session WRITES after this point would be lost, which these endpoints never do.
+     */
+    private function releaseSessionLock(): void
+    {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            @session_write_close();
+        }
     }
 }
