@@ -47,7 +47,18 @@ class MelisReactApiController extends MelisAbstractActionController
                 $picture = 'data:image/jpeg;base64,' . base64_encode($identity->usr_image);
             }
             $isAdmin      = !empty($identity->usr_admin);
-            $capabilities = Capabilities::allowedForUser($sm->get('config'), $isAdmin ? null : $auth->getAuthRights());
+            if ($isAdmin) {
+                // Admin ⇒ tout permis (aucun droit à résoudre).
+                $capabilities = Capabilities::allowedForUser($sm->get('config'), null);
+            } else {
+                // Sert les capacités depuis le cache de droits résolu (même choke point que le menu) ;
+                // fallback sur le calcul live si le cache est indisponible.
+                $resolved = null;
+                try { $resolved = $sm->get('MelisCoreRights')->getResolvedRights(); } catch (\Throwable) {}
+                $capabilities = (is_array($resolved) && isset($resolved['caps']) && is_array($resolved['caps']))
+                    ? $resolved['caps']
+                    : Capabilities::allowedForUser($sm->get('config'), $auth->getAuthRights());
+            }
         } catch (\Throwable) {
         }
 
