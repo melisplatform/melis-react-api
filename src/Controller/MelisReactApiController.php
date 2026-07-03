@@ -486,6 +486,9 @@ class MelisReactApiController extends MelisAbstractActionController
                 'pluginName' => $pluginName,
                 'title'      => $title ?: $pluginName,
                 'icon'       => (string) ($datas['icon'] ?? ''),
+                // Thumbnail screenshot shown in the legacy plugin picker (dashboard-menu-content.phtml) —
+                // forwarded as-is so the React palette can show the same image instead of a generic icon.
+                'thumbnail'  => (string) ($datas['thumbnail'] ?? ''),
                 'section'    => (string) ($datas['section'] ?? 'Plugins'),
                 'w'          => (int) ($datas['width']  ?? 6),
                 'h'          => (int) ($datas['height'] ?? 4),
