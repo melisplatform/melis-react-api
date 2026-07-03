@@ -63,8 +63,10 @@ class MelisReactApiController extends MelisAbstractActionController
     // ─── /melis/react-api/rights/capabilities ────────────────────────────────
 
     /**
-     * Capacités d'outils DÉCLARÉES par les modules (carte melisKey → [caps]) — alimente l'éditeur
-     * de droits (cases List/Create/Edit/Delete par outil). Réservé aux gestionnaires de droits.
+     * Capacités d'outils DÉCLARÉES par les modules (carte melisKey → arbre caps) — alimente
+     * l'éditeur de droits (cases List/Create/Edit/Delete + onglets). Réservé aux gestionnaires
+     * de droits. Les `label` d'onglets (clés `tr_...`) sont traduits dans la locale courante ici
+     * (via MelisCoreTranslation) — le module déclare des CLÉS, jamais du texte en dur.
      */
     public function rightsCapabilitiesAction(): HttpResponse
     {
@@ -73,10 +75,35 @@ class MelisReactApiController extends MelisAbstractActionController
         }
         try {
             $declared = Capabilities::declared($this->getServiceManager()->get('config'));
-            return $this->jsonResponse(['success' => true, 'data' => (object) $declared]);
+            $transSvc = null;
+            try { $transSvc = $this->getServiceManager()->get('MelisCoreTranslation'); } catch (\Throwable) {}
+            $out = [];
+            foreach ($declared as $key => $val) {
+                $out[$key] = $this->translateCapLabels($val, $transSvc);
+            }
+            return $this->jsonResponse(['success' => true, 'data' => (object) $out]);
         } catch (\Throwable $e) {
             return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()], 500);
         }
+    }
+
+    /** Traduit récursivement les `label` (clés `tr_...`) d'un nœud de capacités ; laisse les listes plates intactes. */
+    private function translateCapLabels($node, $transSvc)
+    {
+        // Scalaire, ou liste plate d'actions (indices séquentiels) → rien à traduire.
+        if (!is_array($node) || array_values($node) === $node) {
+            return $node;
+        }
+        if (isset($node['label']) && is_string($node['label']) && str_starts_with($node['label'], 'tr_') && $transSvc) {
+            try { $t = (string) $transSvc->getMessage($node['label']); if ($t !== '') { $node['label'] = $t; } } catch (\Throwable) {}
+        }
+        if (isset($node['tabs']) && is_array($node['tabs'])) {
+            $node['tabs'] = array_map(
+                fn ($tab) => is_string($tab) ? $tab : $this->translateCapLabels($tab, $transSvc),
+                $node['tabs']
+            );
+        }
+        return $node;
     }
 
     // ─── /melis/react-api/langs ──────────────────────────────────────────────
