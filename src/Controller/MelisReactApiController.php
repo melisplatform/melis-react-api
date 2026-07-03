@@ -27,6 +27,11 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // Free the PHP session lock BEFORE the (potentially slow) capabilities computation so this
+        // read-only endpoint doesn't serialise every other request sharing the session cookie
+        // (see releaseSessionLock()).
+        $this->releaseSessionLock();
+
         $user = $this->getAuthStorage();
 
         // Current user's profile picture (usr_image blob) as a data URI, like the legacy header.
@@ -651,6 +656,11 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // Free the PHP session lock BEFORE building the menu tree (canAccess over every tool can take
+        // seconds). Read-only endpoint → safe. Without this, a concurrent /users/:id edit fetch
+        // serialises behind /menu and the form spins / bounces back to the list (see releaseSessionLock()).
+        $this->releaseSessionLock();
+
         // `?full=1` returns the UNFILTERED tool tree — used ONLY by the user-rights editor, which
         // must show every tool to be able to grant it (not just the editor's own tools). Restricted
         // to users who can manage user rights.
@@ -1017,5 +1027,24 @@ class MelisReactApiController extends MelisAbstractActionController
     private function getAuthStorage(): object
     {
         return $this->getServiceManager()->get('MelisCoreAuth')->getStorage()->read();
+    }
+
+    /**
+     * Release the PHP session lock early for a READ-ONLY endpoint.
+     *
+     * PHP holds an EXCLUSIVE lock on the session file from session_start() (done in bootstrap) until
+     * the script ends. Slow read-only endpoints — notably /me and /menu, which build the rights /
+     * capabilities / menu tree over every tool and can take several SECONDS — would otherwise
+     * serialise every other request sharing the same session cookie. In practice a user-edit fetch
+     * (GET /users/:id, ~10ms of work) blocks for seconds behind an in-flight /menu or /me, the form
+     * spins, and if the wait is interrupted the page bounces back to the list. Closing the session
+     * here frees the lock while $_SESSION stays readable in-memory (identity/rights reads still work);
+     * only session WRITES after this point would be lost, which these endpoints never do.
+     */
+    private function releaseSessionLock(): void
+    {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            @session_write_close();
+        }
     }
 }
