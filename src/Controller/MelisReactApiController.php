@@ -897,6 +897,15 @@ class MelisReactApiController extends MelisAbstractActionController
             }
 
             if (!$hasNavChild && !empty($catConfig['forward'])) {
+                // Rights gate for a TYPE-REFERENCED leaf tool (its forward was adopted just above from the
+                // linked tool's config). buildLevel3 already rights-checks a nested tool, but a category
+                // that resolves — via `conf.type` — to a single leaf tool skips buildLevel3's gate (it has
+                // no navigable children), so without this an UNGRANTED tool (e.g. melisagent_tool /
+                // melis_mcp_inspector_tool, or an ungranted MelisCommerce tool) would still surface in the
+                // menu. $catAccessKey is the resolved melisKey, so admins/granted users are unaffected.
+                if (!$melisRights->canAccess($catAccessKey)) {
+                    continue;
+                }
                 $tools = [[
                     'key'         => $catKey,
                     'name'        => $catName,
