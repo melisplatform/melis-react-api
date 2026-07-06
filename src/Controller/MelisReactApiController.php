@@ -886,6 +886,7 @@ class MelisReactApiController extends MelisAbstractActionController
             // children AND no forward — the prune below would then discard it (and, once all its
             // siblings are gone, the entire section). When the melisKey resolves to a real tool that
             // still carries a forward, adopt it so the category surfaces as a clickable leaf tool.
+            $toolCfg = null;
             if (!$hasNavChild && empty($catConfig['forward'])) {
                 $mk = $catConfig['conf']['melisKey'] ?? null;
                 if ($mk && !empty($this->menuMelisKeys[$mk]) && $this->menuConfig) {
@@ -906,7 +907,12 @@ class MelisReactApiController extends MelisAbstractActionController
                 if (!$melisRights->canAccess($catAccessKey)) {
                     continue;
                 }
-                $tools = [[
+                // Single-tool leftmenu-wrapper pattern (categories/products/clients/orders/coupons/…):
+                // promote the resolved tool directly to a FLAT top-level row instead of nesting it one
+                // level deeper under a group with a single child — that used to render as a redundant
+                // "Produits > Produits" double row. CategoryGroup already renders a top-level
+                // isTool+!hasNavChild node as a plain ToolRow, same as standalone tools (e.g. Comptes).
+                $categories[] = [
                     'key'         => $catKey,
                     'name'        => $catName,
                     'icon'        => $catIcon,
@@ -914,9 +920,10 @@ class MelisReactApiController extends MelisAbstractActionController
                     'isTool'      => true,
                     'forward'     => $catConfig['forward'],
                     'hasNavChild' => false,
+                    'configChildCount' => count($catConfig['interface'] ?? []),
                     'children'    => [],
-                ]];
-                $hasNavChild = true;
+                ];
+                continue;
             }
 
             if (!$hasNavChild && empty($catConfig['forward'])) {
