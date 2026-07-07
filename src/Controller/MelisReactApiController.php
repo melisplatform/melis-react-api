@@ -880,6 +880,38 @@ class MelisReactApiController extends MelisAbstractActionController
                 $hasNavChild = !empty($tools);
             }
 
+            // Single-REAL-tool section, reached via the NORMAL buildLevel3 path (as opposed to the
+            // conf.type-adoption fallback below): e.g. MelisCmsProspects declares 2 tools
+            // (Prospects + Themes) under one section, but Themes' resolved config lacks a sub-item
+            // icon, which buildLevel3 requires to count a nested entry as navigable — so it's
+            // silently pruned and only Prospects survives, leaving a redundant "Prospect > Prospect"
+            // double row. Flatten ONLY when this is a STRUCTURAL single-tool wrapper, not a
+            // rights-based reduction (e.g. an "Administration" section where a restricted user is
+            // granted just 1 of several tools must keep its group header — an admin would see more).
+            // Distinguish the two by re-resolving with PERMISSIVE rights: if that also yields at most
+            // one tool, no one — admin included — could ever see a second child, so it's safe to
+            // promote the lone tool to a flat top-level row.
+            if ($hasNavChild && count($tools) === 1 && empty($catConfig['forward'])) {
+                static $permissiveRights = null;
+                $permissiveRights ??= new class { public function canAccess($key): bool { return true; } };
+                $potentialTools = $this->buildLevel3($catConfig['interface'], $permissiveRights);
+                if (count($potentialTools) <= 1) {
+                    $onlyTool = $tools[0];
+                    $categories[] = [
+                        'key'         => $catKey,
+                        'name'        => $catName,
+                        'icon'        => $catIcon,
+                        'melisKey'    => $onlyTool['melisKey'] ?? $catConfig['conf']['melisKey'] ?? $catKey,
+                        'isTool'      => true,
+                        'forward'     => $onlyTool['forward'] ?? [],
+                        'hasNavChild' => false,
+                        'configChildCount' => count($catConfig['interface'] ?? []),
+                        'children'    => [],
+                    ];
+                    continue;
+                }
+            }
+
             // Fallback for the MelisCommerce leftmenu pattern: categories are declared via a `conf.type`
             // link whose target carries only conf (name/icon/melisKey). getItem() merges that conf but
             // DROPS the node's original `forward`, so the resolved category ends up with no navigable
