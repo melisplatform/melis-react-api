@@ -897,10 +897,16 @@ class MelisReactApiController extends MelisAbstractActionController
                 $potentialTools = $this->buildLevel3($catConfig['interface'], $permissiveRights);
                 if (count($potentialTools) <= 1) {
                     $onlyTool = $tools[0];
+                    // Si le wrapper n'a pas son propre nom/icône (ex. MelisCron's `meliscron_conf` : aucun
+                    // bloc `conf` déclaré), $catName/$catIcon retombent sur la clé technique brute (pas une
+                    // clé de traduction `tr_...`) → s'affiche tel quel, non traduit. Préférer alors le nom/
+                    // icône du tool résolu, qui EST toujours déclaré (cf. buildLevel3).
+                    $flatName = $catConfig['conf']['name'] ?? $onlyTool['name'];
+                    $flatIcon = $catConfig['conf']['icon'] ?? $onlyTool['icon'];
                     $categories[] = [
                         'key'         => $catKey,
-                        'name'        => $catName,
-                        'icon'        => $catIcon,
+                        'name'        => $flatName,
+                        'icon'        => $flatIcon,
                         'melisKey'    => $onlyTool['melisKey'] ?? $catConfig['conf']['melisKey'] ?? $catKey,
                         'isTool'      => true,
                         'forward'     => $onlyTool['forward'] ?? [],
