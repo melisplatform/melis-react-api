@@ -269,11 +269,6 @@ class MelisReactApiController extends MelisAbstractActionController
                         // host collapses /[section]/[tool]/:id to ONE tool tab + renders SubTabBar
                         // for opened records. Off by default (a brick keeps a top tab per entity).
                         'subTabs'    => (bool) ($def['subTabs'] ?? false),
-                        // Opt-in to persistent mounting: the host keeps the brick MOUNTED (hidden)
-                        // across top-tab switches so its state/list survives instead of reloading.
-                        // The brick MUST accept an `active` prop and freeze route-reading when inactive
-                        // (see CmsStylePage) — otherwise, kept mounted, it would act on a foreign route.
-                        'persistent' => (bool) ($def['persistent'] ?? false),
                         'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
                     ];
                 }
@@ -896,7 +891,10 @@ class MelisReactApiController extends MelisAbstractActionController
             // Distinguish the two by re-resolving with PERMISSIVE rights: if that also yields at most
             // one tool, no one — admin included — could ever see a second child, so it's safe to
             // promote the lone tool to a flat top-level row.
-            if ($hasNavChild && count($tools) === 1 && empty($catConfig['forward'])) {
+            // conf.no_collapse forces the category to stay an expandable group even with a single
+            // tool (e.g. "Dev Tools" → "Melis Phpinfo"), so more tools can be added under it later.
+            $noCollapse = !empty($catConfig['conf']['no_collapse']);
+            if (!$noCollapse && $hasNavChild && count($tools) === 1 && empty($catConfig['forward'])) {
                 static $permissiveRights = null;
                 $permissiveRights ??= new class { public function canAccess($key): bool { return true; } };
                 $potentialTools = $this->buildLevel3($catConfig['interface'], $permissiveRights);
@@ -984,6 +982,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 // Unfiltered tool count for this category (see section node note): the nav must keep the
                 // "Administration" header even when only 1 of its 4 tools is granted to the user.
                 'configChildCount' => count($catConfig['interface'] ?? []),
+                'noCollapse'  => $noCollapse,
                 'children'    => $tools,
             ];
         }
