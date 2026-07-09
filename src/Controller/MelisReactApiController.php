@@ -877,17 +877,21 @@ class MelisReactApiController extends MelisAbstractActionController
             }
 
             // Unwrap a redundant single wrapper level: some modules declare the same group twice
-            // (e.g. MelisPhpinfo: meliscore_tool_dev_tool_conf → meliscore_tool_dev_tool → melis_phpinfo_tool,
-            // both wrappers carrying the SAME melisKey). The legacy left menu needs both levels; the React
-            // tree only needs one — otherwise the rights editor shows a doubled "Dev Tools > Dev Tools" and
-            // the nav carries an extra, separately-rights-gated dead level. Collapse the identical inner
-            // wrapper into this category so downstream (buildLevel3 / configChildCount / flatten) sees the
-            // real tools directly under it.
+            // (e.g. MelisPhpinfo: "Dev Tools" section → "Dev Tools" node → melis_phpinfo_tool). The legacy
+            // left menu NEEDS both levels (a single-tool category's own header is suppressed, so the inner
+            // node provides the visible "Dev Tools" group label), but the React tree only needs one —
+            // otherwise the rights editor shows a doubled "Dev Tools > Dev Tools" and the nav carries an
+            // extra, separately-rights-gated dead level. Collapse a forward-less inner wrapper that is
+            // redundant with this category — same melisKey OR same display name — so downstream
+            // (buildLevel3 / configChildCount / flatten) sees the real tools directly under it.
             if (!empty($catConfig['interface']) && count($catConfig['interface']) === 1) {
-                $onlyKey  = array_key_first($catConfig['interface']);
-                $onlyNode = $catConfig['interface'][$onlyKey];
-                $sameKey  = ($onlyNode['conf']['melisKey'] ?? $onlyKey) === $catAccessKey;
-                if ($sameKey && empty($onlyNode['forward']) && !empty($onlyNode['interface'])) {
+                $onlyKey   = array_key_first($catConfig['interface']);
+                $onlyNode  = $catConfig['interface'][$onlyKey];
+                $catName   = $catConfig['conf']['name'] ?? null;
+                $sameKey   = ($onlyNode['conf']['melisKey'] ?? $onlyKey) === $catAccessKey;
+                $sameName  = !empty($onlyNode['conf']['name']) && $catName !== null
+                    && $onlyNode['conf']['name'] === $catName;
+                if (($sameKey || $sameName) && empty($onlyNode['forward']) && !empty($onlyNode['interface'])) {
                     $catConfig['interface'] = $onlyNode['interface'];
                 }
             }
