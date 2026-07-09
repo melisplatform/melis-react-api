@@ -269,6 +269,12 @@ class MelisReactApiController extends MelisAbstractActionController
                         // host collapses /[section]/[tool]/:id to ONE tool tab + renders SubTabBar
                         // for opened records. Off by default (a brick keeps a top tab per entity).
                         'subTabs'    => (bool) ($def['subTabs'] ?? false),
+                        // Opt-in to persistent mounting: the host keeps the brick MOUNTED (CSS-hidden)
+                        // once visited, so switching tool tabs never refetches its data nor reloads its
+                        // legacy iframe. The host scopes the brick's router context to its own route and
+                        // passes it an `active` prop (see Shell.tsx BrickHost); a brick may still freeze
+                        // its own route-reading on `active` (see CmsStylePage).
+                        'persistent' => (bool) ($def['persistent'] ?? false),
                         'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
                     ];
                 }
@@ -868,6 +874,26 @@ class MelisReactApiController extends MelisAbstractActionController
             }
             if (!($catConfig['conf']['left_menu_display'] ?? true)) {
                 continue;
+            }
+
+            // Unwrap a redundant single wrapper level: some modules declare the same group twice
+            // (e.g. MelisPhpinfo: "Dev Tools" section → "Dev Tools" node → melis_phpinfo_tool). The legacy
+            // left menu NEEDS both levels (a single-tool category's own header is suppressed, so the inner
+            // node provides the visible "Dev Tools" group label), but the React tree only needs one —
+            // otherwise the rights editor shows a doubled "Dev Tools > Dev Tools" and the nav carries an
+            // extra, separately-rights-gated dead level. Collapse a forward-less inner wrapper that is
+            // redundant with this category — same melisKey OR same display name — so downstream
+            // (buildLevel3 / configChildCount / flatten) sees the real tools directly under it.
+            if (!empty($catConfig['interface']) && count($catConfig['interface']) === 1) {
+                $onlyKey   = array_key_first($catConfig['interface']);
+                $onlyNode  = $catConfig['interface'][$onlyKey];
+                $catName   = $catConfig['conf']['name'] ?? null;
+                $sameKey   = ($onlyNode['conf']['melisKey'] ?? $onlyKey) === $catAccessKey;
+                $sameName  = !empty($onlyNode['conf']['name']) && $catName !== null
+                    && $onlyNode['conf']['name'] === $catName;
+                if (($sameKey || $sameName) && empty($onlyNode['forward']) && !empty($onlyNode['interface'])) {
+                    $catConfig['interface'] = $onlyNode['interface'];
+                }
             }
 
             $catName     = $catConfig['conf']['name'] ?? $catKey;
