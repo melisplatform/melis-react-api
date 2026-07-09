@@ -269,6 +269,12 @@ class MelisReactApiController extends MelisAbstractActionController
                         // host collapses /[section]/[tool]/:id to ONE tool tab + renders SubTabBar
                         // for opened records. Off by default (a brick keeps a top tab per entity).
                         'subTabs'    => (bool) ($def['subTabs'] ?? false),
+                        // Opt-in to persistent mounting: the host keeps the brick MOUNTED (CSS-hidden)
+                        // once visited, so switching tool tabs never refetches its data nor reloads its
+                        // legacy iframe. The host scopes the brick's router context to its own route and
+                        // passes it an `active` prop (see Shell.tsx BrickHost); a brick may still freeze
+                        // its own route-reading on `active` (see CmsStylePage).
+                        'persistent' => (bool) ($def['persistent'] ?? false),
                         'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
                     ];
                 }
@@ -868,6 +874,22 @@ class MelisReactApiController extends MelisAbstractActionController
             }
             if (!($catConfig['conf']['left_menu_display'] ?? true)) {
                 continue;
+            }
+
+            // Unwrap a redundant single wrapper level: some modules declare the same group twice
+            // (e.g. MelisPhpinfo: meliscore_tool_dev_tool_conf → meliscore_tool_dev_tool → melis_phpinfo_tool,
+            // both wrappers carrying the SAME melisKey). The legacy left menu needs both levels; the React
+            // tree only needs one — otherwise the rights editor shows a doubled "Dev Tools > Dev Tools" and
+            // the nav carries an extra, separately-rights-gated dead level. Collapse the identical inner
+            // wrapper into this category so downstream (buildLevel3 / configChildCount / flatten) sees the
+            // real tools directly under it.
+            if (!empty($catConfig['interface']) && count($catConfig['interface']) === 1) {
+                $onlyKey  = array_key_first($catConfig['interface']);
+                $onlyNode = $catConfig['interface'][$onlyKey];
+                $sameKey  = ($onlyNode['conf']['melisKey'] ?? $onlyKey) === $catAccessKey;
+                if ($sameKey && empty($onlyNode['forward']) && !empty($onlyNode['interface'])) {
+                    $catConfig['interface'] = $onlyNode['interface'];
+                }
             }
 
             $catName     = $catConfig['conf']['name'] ?? $catKey;
