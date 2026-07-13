@@ -309,15 +309,25 @@ class MelisReactApiController extends MelisAbstractActionController
         $data = [
             'news'          => ['count' => 0],
             'updates'       => ['count' => 0],
-            'notifications' => ['count' => 0],
+            'notifications' => ['count' => 0, 'items' => []],
             'messages'      => ['count' => 0],
         ];
 
-        // Notifications — MelisCore flash messenger (always available).
+        // Notifications — MelisCore flash messenger (always available). Titles/messages are
+        // stored untranslated (translation keys) and re-translated here at read time, same as
+        // the legacy MelisFlashMessengerController::getflashMessageAction().
         try {
             $notifs = json_decode((string) $sm->get('MelisCoreFlashMessenger')->getFlashMessengerMessages(), true);
             if (is_array($notifs)) {
+                $translator = $sm->get('translator');
                 $data['notifications']['count'] = count($notifs);
+                foreach ($notifs as $notif) {
+                    $data['notifications']['items'][] = [
+                        'title'      => $translator->translate($notif['title'] ?? ''),
+                        'message'    => $translator->translate($notif['message'] ?? ''),
+                        'date_trans' => $notif['date_trans'] ?? '',
+                    ];
+                }
             }
         } catch (\Throwable $e) { /* keep 0 */ }
 
@@ -483,18 +493,37 @@ class MelisReactApiController extends MelisAbstractActionController
         $translationSvc = null;
         try { $translationSvc = $sm->get('MelisCoreTranslation'); } catch (\Throwable) {}
 
+        // Native React widgets already cover these — skip to avoid a duplicate tile in the palette
+        // (cf. ui-react/src/components/dashboard/widget-registry.tsx).
+        $nativeReactEquivalents = ['MelisCoreDashboardRecentUserActivityPlugin'];
+
+        // Same fixed section order legacy uses (config/app.interface.php → fallBacksection, plus
+        // DashboardPluginsController::organizedPluginsBySection's appended custom sections). A
+        // section value outside this list — or missing — falls into "Others", same as legacy.
+        $knownSections = ['MelisCore', 'MelisCms', 'MelisMarketing', 'MelisCommerce', 'MelisSites', 'Others', 'CustomProjects'];
+
         $plugins = [];
         foreach ($pluginNames as $pluginName) {
-            // conf.type → full path of the plugin entry (e.g. /checkwsstatus/interface/CheckWsStatusPlugin).
-            // getItem() with a melisKey also works here.
-            $typePath = $section['interface'][$pluginName]['conf']['type'] ?? null;
-            if (!$typePath) continue;
+            if (in_array($pluginName, $nativeReactEquivalents, true)) continue;
 
-            $pluginConfig = null;
-            try { $pluginConfig = $config->getItem($typePath); } catch (\Throwable) {}
+            // Modules external to MelisCore register via a conf.type indirection pointing to their
+            // own namespace (e.g. /meliscommerce/interface/...) — MelisCore's own plugins are
+            // declared directly in place instead, so fall back to the node itself when there's no type.
+            $node     = $section['interface'][$pluginName] ?? [];
+            $typePath = $node['conf']['type'] ?? null;
+
+            $pluginConfig = $node;
+            if ($typePath) {
+                try { $pluginConfig = $config->getItem($typePath); } catch (\Throwable) { $pluginConfig = null; }
+            }
             if (empty($pluginConfig['datas'])) continue;
 
             $datas = $pluginConfig['datas'];
+
+            // Bubbles (News/Updates/Notifications/Messages) and the drag-drop grid container are
+            // dashboard plugins too, but not addable widgets — they're rendered elsewhere already.
+            if (!empty($datas['skip_plugin_container'])) continue;
+
             $title = (string) ($datas['name'] ?? $pluginName);
 
             if (str_starts_with($title, 'tr_') && $translationSvc) {
@@ -504,6 +533,15 @@ class MelisReactApiController extends MelisAbstractActionController
                 } catch (\Throwable) {}
             }
 
+            $sectionValue = (string) ($datas['section'] ?? '');
+            if (!in_array($sectionValue, $knownSections, true)) {
+                // A plugin declared directly under meliscore's own tree (no conf.type indirection to
+                // another module's namespace) belongs to MelisCore itself — legacy resolves this via
+                // the marketplace category lookup for the "meliscore" module, which isn't reachable
+                // offline, so we shortcut it here instead of dumping every core plugin into "Others".
+                $sectionValue = $typePath ? 'Others' : 'MelisCore';
+            }
+
             $plugins[] = [
                 'pluginName' => $pluginName,
                 'title'      => $title ?: $pluginName,
@@ -511,7 +549,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 // Thumbnail screenshot shown in the legacy plugin picker (dashboard-menu-content.phtml) —
                 // forwarded as-is so the React palette can show the same image instead of a generic icon.
                 'thumbnail'  => (string) ($datas['thumbnail'] ?? ''),
-                'section'    => (string) ($datas['section'] ?? 'Plugins'),
+                'section'    => $sectionValue,
                 'w'          => (int) ($datas['width']  ?? 6),
                 'h'          => (int) ($datas['height'] ?? 4),
             ];
@@ -861,15 +899,24 @@ class MelisReactApiController extends MelisAbstractActionController
         $categories = [];
 
         foreach ($interface as $catKey => $catConfig) {
-            // Only gate a category by canAccess when it is itself a TOOL (has a forward). A plain
-            // container category isn't granted by per-tool rights — its visibility comes from its
-            // tools (buildLevel3 + the empty-prune below).
+            // Only gate a category by canAccess when it is itself a LEAF tool — a forward AND no
+            // children. A container category isn't granted by per-tool rights: its visibility comes
+            // from its tools (buildLevel3 + the empty-prune below).
+            // A forward alone does NOT make a category a tool. Some modules wrap their tool in a
+            // leftmenu node that carries a forward of its own — one that merely RENDERS the menu
+            // entry, not the tool (e.g. MelisCalendar's `meliscalendar_leftnemu` →
+            // Calendar::render-calendar-leftmenu, wrapping the real `meliscalendar_tool`). The rights
+            // editor lists the child tool, so the wrapper's melisKey is never grantable, and gating on
+            // it hid the tool from every non-admin no matter what was granted. Such a wrapper is left
+            // to its children; if none is granted, `tools` comes back empty and the !$hasNavChild
+            // branch below still rights-gates (and prunes) it.
             // Check rights on the resolved melisKey, NOT the leftmenu array key: the rights XML
             // stores grants by melisKey, and the two differ for some modules (e.g. MelisSmallBusiness'
             // leftmenu key `melisSB_tool_userrole` vs melisKey `melissb_tool_userrole`) — using the
             // array key would wrongly hide the tool for everyone, admin included.
             $catAccessKey = $catConfig['conf']['melisKey'] ?? $catKey;
-            if (!empty($catConfig['forward']) && !$melisRights->canAccess($catAccessKey)) {
+            if (!empty($catConfig['forward']) && empty($catConfig['interface'])
+                && !$melisRights->canAccess($catAccessKey)) {
                 continue;
             }
             if (!($catConfig['conf']['left_menu_display'] ?? true)) {
@@ -919,8 +966,19 @@ class MelisReactApiController extends MelisAbstractActionController
             // promote the lone tool to a flat top-level row.
             // conf.no_collapse forces the category to stay an expandable group even with a single
             // tool (e.g. "Dev Tools" → "Melis Phpinfo"), so more tools can be added under it later.
+            //
+            // ⚠ ...and ONLY when that lone tool is itself a LEAF. This branch rebuilds the category as
+            // a leaf node with `children => []`, so flattening a lone tool that has its OWN nav
+            // children DELETES them (and, since a container wrapper has no `forward`, leaves a dead
+            // unclickable row). That is the "Tool creation & Design" shape: the category holds one
+            // wrapper (`meliscore_tool_tools`) which holds the real tools (MelisToolCreator,
+            // MelisTemplatingPluginCreator, MelisDashboardPluginCreator). When the lone tool has
+            // children, fall through to the normal category emit and let the FRONT-END unwrap the
+            // chain: `collapseSingleTool()` (useNavMenu) promotes a level-2 single-child wrapper
+            // while keeping deeper group headers, so a genuinely single-tool chain renders correctly
+            // and a multi-tool wrapper keeps its group header.
             $noCollapse = !empty($catConfig['conf']['no_collapse']);
-            if (!$noCollapse && $hasNavChild && count($tools) === 1 && empty($catConfig['forward'])) {
+            if (!$noCollapse && $hasNavChild && count($tools) === 1 && empty($tools[0]['children']) && empty($catConfig['forward'])) {
                 static $permissiveRights = null;
                 $permissiveRights ??= new class { public function canAccess($key): bool { return true; } };
                 $potentialTools = $this->buildLevel3($catConfig['interface'], $permissiveRights);
