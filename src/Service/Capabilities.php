@@ -50,6 +50,12 @@ class Capabilities
         return array_values($arr) === $arr;
     }
 
+    /** Clé d'une action : soit une chaîne simple, soit un objet `{key,label}` (action labellisée). */
+    private static function actionKey($a): string
+    {
+        return is_array($a) ? (string) ($a['key'] ?? '') : (string) $a;
+    }
+
     /**
      * Aplati un nœud de capacités — liste plate historique OU arbre {actions,tabs} — en clés de
      * capacité, préfixées par le chemin des sous-onglets (ex. `variants.list`). Un élément de
@@ -63,11 +69,11 @@ class Capabilities
         }
         if (self::isList($node)) {
             // Liste plate : soit la déclaration historique (prefix vide), soit déjà une liste
-            // d'actions au sein d'un nœud d'arbre.
-            return array_map(static fn ($c) => $prefix === '' ? (string) $c : "$prefix.$c", $node);
+            // d'actions au sein d'un nœud d'arbre. Chaque item peut être une chaîne OU `{key,label}`.
+            return array_map(static fn ($c) => $prefix === '' ? self::actionKey($c) : "$prefix." . self::actionKey($c), $node);
         }
         $out = array_map(
-            static fn ($c) => $prefix === '' ? (string) $c : "$prefix.$c",
+            static fn ($c) => $prefix === '' ? self::actionKey($c) : "$prefix." . self::actionKey($c),
             $node['actions'] ?? [],
         );
         foreach (($node['tabs'] ?? []) as $tab) {

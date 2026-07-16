@@ -118,6 +118,16 @@ class MelisReactApiController extends MelisAbstractActionController
         if (isset($node['label']) && is_string($node['label']) && str_starts_with($node['label'], 'tr_') && $transSvc) {
             try { $t = (string) $transSvc->getMessage($node['label'], $locale); if ($t !== '') { $node['label'] = $t; } } catch (\Throwable) {}
         }
+        // Actions labellisées `{key,label}` (nouveau) : traduire leur `label` tr_. Les actions en
+        // chaîne simple (rétro-compat) restent intactes (label dérivé côté React via i18n générique).
+        if (isset($node['actions']) && is_array($node['actions'])) {
+            $node['actions'] = array_map(function ($a) use ($transSvc, $locale) {
+                if (is_array($a) && isset($a['label']) && is_string($a['label']) && str_starts_with($a['label'], 'tr_') && $transSvc) {
+                    try { $t = (string) $transSvc->getMessage($a['label'], $locale); if ($t !== '') { $a['label'] = $t; } } catch (\Throwable) {}
+                }
+                return $a;
+            }, $node['actions']);
+        }
         if (isset($node['tabs']) && is_array($node['tabs'])) {
             $node['tabs'] = array_map(
                 fn ($tab) => is_string($tab) ? $tab : $this->translateCapLabels($tab, $transSvc, $locale),
@@ -887,6 +897,43 @@ class MelisReactApiController extends MelisAbstractActionController
                 'configChildCount' => count($orderedInterface),
                 'children'    => $categories,
             ];
+        }
+
+        // Outils « rights-only » (visibles UNIQUEMENT dans l'éditeur de droits, pas dans le menu de
+        // gauche) : nœuds synthétiques déclarés par les modules via la config mergée `melisReactRightsTools`
+        // = [ sectionKey => [ ['melisKey','name','icon'] ] ]. Sert aux outils qui ne s'ouvrent PAS par une
+        // clé de menu (ex. l'éditeur de page CMS, ouvert via l'arbre du site) mais dont on veut exposer les
+        // capacités (onglets/boutons) dans Users→Droits. Injectés seulement quand $full (arbre de droits).
+        if ($full) {
+            $rightsTools = $sm->get('config')['melisReactRightsTools'] ?? [];
+            if (is_array($rightsTools) && $rightsTools) {
+                foreach ($menu as &$section) {
+                    $extra = $rightsTools[$section['key']] ?? null;
+                    if (!is_array($extra)) { continue; }
+                    $prepend = [];
+                    foreach ($extra as $node) {
+                        if (empty($node['melisKey'])) { continue; }
+                        $name = (string) ($node['name'] ?? $node['melisKey']);
+                        if ($transSvc && str_starts_with($name, 'tr_')) {
+                            try { $t = (string) $transSvc->getMessage($name); if ($t !== '') { $name = $t; } } catch (\Throwable) {}
+                        }
+                        $prepend[] = [
+                            'key'         => $node['melisKey'],
+                            'name'        => $name,
+                            'icon'        => $node['icon'] ?? '',
+                            'melisKey'    => $node['melisKey'],
+                            'isTool'      => true,
+                            'forward'     => [],
+                            'hasNavChild' => false,
+                            'children'    => [],
+                        ];
+                    }
+                    // En TÊTE de la section (demandé) : les nœuds rights-only passent avant les outils.
+                    $section['children'] = array_merge($prepend, $section['children'] ?? []);
+                    $section['hasNavChild'] = true;
+                }
+                unset($section);
+            }
         }
 
         return $this->jsonResponse(['success' => true, 'data' => $menu]);
