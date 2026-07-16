@@ -1031,11 +1031,13 @@ class MelisReactApiController extends MelisAbstractActionController
                 $potentialTools = $this->buildLevel3($catConfig['interface'], $permissiveRights);
                 if (count($potentialTools) <= 1) {
                     $onlyTool = $tools[0];
-                    // Si le wrapper n'a pas son propre nom/icône (ex. MelisCron's `meliscron_conf` : aucun
-                    // bloc `conf` déclaré), $catName/$catIcon retombent sur la clé technique brute (pas une
-                    // clé de traduction `tr_...`) → s'affiche tel quel, non traduit. Préférer alors le nom/
-                    // icône du tool résolu, qui EST toujours déclaré (cf. buildLevel3).
-                    $flatName = $catConfig['conf']['name'] ?? $onlyTool['name'];
+                    // Le wrapper est APLATI (il disparaît, on promeut le tool en ligne de nav) → afficher le
+                    // nom du TOOL résolu, pas celui du wrapper. Le wrapper peut porter un `conf.name` destiné
+                    // à l'arbre de DROITS legacy (ex. MelisCron's `meliscron_conf` = "Melis Cron", label du
+                    // nœud parent dans getToolsKeys) — mais dans la nav aplatie c'est le tool qu'on ouvre, donc
+                    // son nom ("Scheduled Tasks") est le bon. Sans wrapper name, retombait déjà sur le tool ;
+                    // on le rend systématique pour ne pas laisser fuiter le label du wrapper dans la nav.
+                    $flatName = $onlyTool['name'];
                     $flatIcon = $catConfig['conf']['icon'] ?? $onlyTool['icon'];
                     $categories[] = [
                         'key'         => $catKey,
