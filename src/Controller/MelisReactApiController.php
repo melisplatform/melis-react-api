@@ -155,6 +155,11 @@ class MelisReactApiController extends MelisAbstractActionController
         $currentLocale = (string) ($container['melis-lang-locale'] ?? 'en_EN');
         $currentId     = (int) ($container['melis-lang-id'] ?? 0);
 
+        // Lecture seule : on LIBÈRE le verrou d'écriture de session AVANT la requête + la réponse.
+        // Sinon /langs (appelé au boot en même temps que /me, /menu…) sérialise sur le verrou de
+        // session PHP → réponse lente/racée pendant le boot → le sélecteur de langue peut manquer.
+        $this->releaseSessionLock();
+
         $langs = [];
         try {
             $rows = $this->getServiceManager()->get('MelisCoreTableLang')->fetchAll()->toArray();
