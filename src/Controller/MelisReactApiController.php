@@ -512,10 +512,31 @@ class MelisReactApiController extends MelisAbstractActionController
         // (cf. ui-react/src/components/dashboard/widget-registry.tsx).
         $nativeReactEquivalents = ['MelisCoreDashboardRecentUserActivityPlugin'];
 
-        // Same fixed section order legacy uses (config/app.interface.php → fallBacksection, plus
-        // DashboardPluginsController::organizedPluginsBySection's appended custom sections). A
-        // section value outside this list — or missing — falls into "Others", same as legacy.
-        $knownSections = ['MelisCore', 'MelisCms', 'MelisMarketing', 'MelisCommerce', 'MelisSites', 'Others', 'CustomProjects'];
+        // Section list + order: identical to DashboardPluginsController::organizedPluginsBySection —
+        // marketplace categories when reachable, else the offline fallback declared in
+        // config/app.interface.php (/meliscore/datas/fallBacksection), then the custom sections it
+        // appends. A section outside this list — or missing — falls into "Others", same as legacy.
+        $pluginsSvc = null;
+        try { $pluginsSvc = $sm->get('MelisCorePluginsService'); } catch (\Throwable) {}
+
+        $knownSections = [];
+        if ($pluginsSvc) {
+            try { $knownSections = (array) $pluginsSvc->getPackagistCategories(); } catch (\Throwable) {}
+        }
+        if (!$knownSections) {
+            try { $knownSections = (array) $config->getItem('/meliscore/datas/fallBacksection'); } catch (\Throwable) {}
+        }
+        $knownSections = array_values(array_unique(array_merge(
+            $knownSections ?: ['MelisCore', 'MelisCms', 'MelisMarketing', 'MelisCommerce', 'MelisSites'],
+            ['MelisCommerce', 'Others', 'CustomProjects'],
+        )));
+
+        // module → marketplace section, exactly like legacy (getMelisPublicModules with the
+        // $dashboardPlugin flag, which CamelCases the package name into the module name).
+        $publicModules = [];
+        if ($pluginsSvc) {
+            try { $publicModules = (array) $pluginsSvc->getMelisPublicModules(null, true); } catch (\Throwable) {}
+        }
 
         $plugins = [];
         foreach ($pluginNames as $pluginName) {
@@ -548,7 +569,28 @@ class MelisReactApiController extends MelisAbstractActionController
                 } catch (\Throwable) {}
             }
 
-            $sectionValue = (string) ($datas['section'] ?? '');
+            // Owning module — legacy groups plugins by it inside each section.
+            $module = (string) ($pluginConfig['forward']['module'] ?? '');
+
+            // Module label: same translation key legacy uses in dashboard-menu-content.phtml.
+            $moduleLabel = $module;
+            if ($module && $translationSvc) {
+                try {
+                    $translated = (string) $translationSvc->getMessage('tr_PluginSection_' . strtolower($module));
+                    if ($translated !== '') { $moduleLabel = $translated; }
+                } catch (\Throwable) {}
+            }
+            // No translation entry → humanise "MelisCmsPageHistoric" into "Melis Cms Page Historic".
+            if ($moduleLabel === $module && $module !== '') {
+                $moduleLabel = trim(preg_replace('/(?<!^)([A-Z])/', ' $1', $module));
+            }
+
+            // Section: the module's marketplace section wins (legacy rule), then the plugin's own
+            // `section`, then the offline shortcut below.
+            $sectionValue = (string) ($publicModules[$module]['section'] ?? '');
+            if ($sectionValue === '') {
+                $sectionValue = (string) ($datas['section'] ?? '');
+            }
             if (!in_array($sectionValue, $knownSections, true)) {
                 // A plugin declared directly under meliscore's own tree (no conf.type indirection to
                 // another module's namespace) belongs to MelisCore itself — legacy resolves this via
@@ -561,6 +603,8 @@ class MelisReactApiController extends MelisAbstractActionController
                 'pluginName' => $pluginName,
                 'title'      => $title ?: $pluginName,
                 'icon'       => (string) ($datas['icon'] ?? ''),
+                'module'      => $module,
+                'moduleLabel' => $moduleLabel ?: $module,
                 // Thumbnail screenshot shown in the legacy plugin picker (dashboard-menu-content.phtml) —
                 // forwarded as-is so the React palette can show the same image instead of a generic icon.
                 'thumbnail'  => (string) ($datas['thumbnail'] ?? ''),
@@ -569,6 +613,21 @@ class MelisReactApiController extends MelisAbstractActionController
                 'h'          => (int) ($datas['height'] ?? 4),
             ];
         }
+
+        // Emit in legacy order — sections first (marketplace/fallback order), modules next (first
+        // appearance). The React palette keeps this order as-is when it builds its groups, so no
+        // section ordering is duplicated client-side.
+        $sectionRank = array_flip($knownSections);
+        $moduleRank  = [];
+        foreach ($plugins as $p) {
+            if (!isset($moduleRank[$p['module']])) { $moduleRank[$p['module']] = count($moduleRank); }
+        }
+        usort($plugins, function (array $a, array $b) use ($sectionRank, $moduleRank) {
+            $sa = $sectionRank[$a['section']] ?? PHP_INT_MAX;
+            $sb = $sectionRank[$b['section']] ?? PHP_INT_MAX;
+            if ($sa !== $sb) { return $sa <=> $sb; }
+            return ($moduleRank[$a['module']] ?? 0) <=> ($moduleRank[$b['module']] ?? 0);
+        });
 
         return $this->jsonResponse(['success' => true, 'data' => $plugins]);
     }
