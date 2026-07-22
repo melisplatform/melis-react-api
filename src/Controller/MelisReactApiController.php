@@ -519,6 +519,11 @@ class MelisReactApiController extends MelisAbstractActionController
         $pluginsSvc = null;
         try { $pluginsSvc = $sm->get('MelisCorePluginsService'); } catch (\Throwable) {}
 
+        // Same rights gate as legacy (DashboardPluginsController::getDashboardPluginsMenuAction) —
+        // the right key is the plugin CLASS name, stored under <melis_dashboardplugin> in usr_rights.
+        $rightsSvc = null;
+        try { $rightsSvc = $sm->get('MelisCoreDashboardPluginsService'); } catch (\Throwable) {}
+
         $knownSections = [];
         if ($pluginsSvc) {
             try { $knownSections = (array) $pluginsSvc->getPackagistCategories(); } catch (\Throwable) {}
@@ -541,6 +546,10 @@ class MelisReactApiController extends MelisAbstractActionController
         $plugins = [];
         foreach ($pluginNames as $pluginName) {
             if (in_array($pluginName, $nativeReactEquivalents, true)) continue;
+
+            // Rights: user must be granted this plugin (or the _root wildcard). Mirrors
+            // DashboardPluginsController.php:92.
+            if ($rightsSvc && !$rightsSvc->canAccess($pluginName)) continue;
 
             // Modules external to MelisCore register via a conf.type indirection pointing to their
             // own namespace (e.g. /meliscommerce/interface/...) — MelisCore's own plugins are
