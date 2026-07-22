@@ -857,6 +857,14 @@ class MelisReactApiController extends MelisAbstractActionController
         $transSvc    = null;
         try { $transSvc = $sm->get('MelisCoreTranslation'); } catch (\Throwable) {}
 
+        // Sections « hôtes de sidebar » : déclarées par un module (config mergée
+        // `melisReactSidebarHostSections` = [ sectionKey => ['requires' => melisKey, 'module' => …] ]).
+        // Une telle section reste VISIBLE dans le menu même si aucun de ses outils n'est accessible,
+        // à condition que l'utilisateur ait `canAccess(requires)` — pour héberger un panneau React
+        // (ex. l'arbre des pages CMS, seul chemin vers les pages autorisées). Cf. ticket 0010724.
+        $sidebarHostSections = [];
+        try { $sidebarHostSections = $sm->get('config')['melisReactSidebarHostSections'] ?? []; } catch (\Throwable) {}
+
         // Découverte dynamique de toutes les sections enregistrées dans le leftmenu.
         $leftMenuInterface = $melisConfig->getItem(
             'meliscore/interface/meliscore_leftmenu/interface',
@@ -953,6 +961,27 @@ class MelisReactApiController extends MelisAbstractActionController
             $categories = $this->buildLevel2($orderedInterface, $effectiveRights);
 
             if (empty($categories)) {
+                // Aucun outil accessible sous cette section. Normalement on l'élague — SAUF si un module
+                // l'a déclarée « hôte de sidebar » ET que l'utilisateur a le droit gating : on la garde
+                // alors comme conteneur nu (sans enfant, sans forward) portant `sidebarModule`, pour que
+                // l'hôte React y accroche son panneau (arbre des pages). `melisKey => null` évite que la
+                // section vide soit prise pour une feuille-zone (iframe) côté front. Jamais en $full
+                // (l'arbre de droits est déjà permissif, la section a ses enfants). Cf. ticket 0010724.
+                $host = $full ? null : ($sidebarHostSections[$sectionKey] ?? null);
+                if (is_array($host) && !empty($host['requires']) && $melisRights->canAccess($host['requires'])) {
+                    $menu[] = [
+                        'key'              => $sectionKey,
+                        'name'             => $sectionName,
+                        'icon'             => $sectionIcon,
+                        'melisKey'         => null,
+                        'isTool'           => false,
+                        'forward'          => [],
+                        'hasNavChild'      => true,
+                        'sidebarModule'    => (string) ($host['module'] ?? ''),
+                        'configChildCount' => count($orderedInterface),
+                        'children'         => [],
+                    ];
+                }
                 continue;
             }
 
