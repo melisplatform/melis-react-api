@@ -919,10 +919,23 @@ class MelisReactApiController extends MelisAbstractActionController
             $sectionName = $sectionConfig['conf']['name'] ?? $sectionKey;
             $sectionIcon = $sectionConfig['conf']['icon'] ?? '';
 
+            // For sections not registered in getMelisKeyPaths(), canAccess() always returns false.
+            // Use permissive rights for those so newly-added module sections remain visible.
+            $effectiveRights = ($knownSectionKeys !== null && !in_array($sectionKey, $knownSectionKeys, true))
+                ? new class { public function canAccess(string $key): bool { return true; } }
+                : $melisRights;
+
             // Sections with is_parent_tool:true are directly clickable (they open a specific
             // tool via target_meliskey) and have no nav children — emit as a leaf tool node.
             if (!empty($sectionConfig['conf']['is_parent_tool'])) {
                 $targetMelisKey = $sectionConfig['conf']['target_meliskey'] ?? ($sectionConfig['conf']['melisKey'] ?? $sectionKey);
+                // ENFORCE rights: an is_parent_tool section IS a directly-clickable tool, so gate it by
+                // canAccess on its target tool — sinon il s'affiche pour tout le monde (ticket 0010726 :
+                // Marketplace visible/ouvrable sans le droit). En $full (éditeur de droits) $melisRights
+                // est permissif → l'outil reste listé dans l'arbre des droits.
+                if (!$effectiveRights->canAccess($targetMelisKey)) {
+                    continue;
+                }
                 // Resolve the target tool's forward so the React nav can route it correctly.
                 $targetConfig = !empty($melisKeys[$targetMelisKey])
                     ? $melisConfig->getItem($melisKeys[$targetMelisKey])
@@ -953,11 +966,6 @@ class MelisReactApiController extends MelisAbstractActionController
                 $melisConfig->getOrderInterfaceConfig($sectionKey)
             );
 
-            // For sections not registered in getMelisKeyPaths(), canAccess() always returns false.
-            // Use permissive rights for those so newly-added module sections remain visible.
-            $effectiveRights = ($knownSectionKeys !== null && !in_array($sectionKey, $knownSectionKeys, true))
-                ? new class { public function canAccess(string $key): bool { return true; } }
-                : $melisRights;
             $categories = $this->buildLevel2($orderedInterface, $effectiveRights);
 
             if (empty($categories)) {
