@@ -508,9 +508,13 @@ class MelisReactApiController extends MelisAbstractActionController
         $translationSvc = null;
         try { $translationSvc = $sm->get('MelisCoreTranslation'); } catch (\Throwable) {}
 
-        // Native React widgets already cover these — skip to avoid a duplicate tile in the palette
-        // (cf. ui-react/src/components/dashboard/widget-registry.tsx).
-        $nativeReactEquivalents = ['MelisCoreDashboardRecentUserActivityPlugin'];
+        // Native React widgets already cover these — skip the legacy tile to avoid a duplicate in the
+        // palette (cf. ui-react/src/components/dashboard/widget-registry.tsx). Map: plugin → native
+        // widget id. They are still RIGHTS-GATED below: a granted one is reported in `nativeWidgets`
+        // so the React dashboard only shows/keeps its native widget when the user has the right
+        // (ticket 0010740 — a rights-less user used to see the native "Recent activity" widget).
+        $nativeReactWidgets = ['MelisCoreDashboardRecentUserActivityPlugin' => 'activity'];
+        $nativeWidgets = [];
 
         // Section list + order: identical to DashboardPluginsController::organizedPluginsBySection —
         // marketplace categories when reachable, else the offline fallback declared in
@@ -545,7 +549,15 @@ class MelisReactApiController extends MelisAbstractActionController
 
         $plugins = [];
         foreach ($pluginNames as $pluginName) {
-            if (in_array($pluginName, $nativeReactEquivalents, true)) continue;
+            // Native React equivalent: still RIGHTS-GATED, but reported via `nativeWidgets` (so the
+            // React dashboard shows/keeps its native widget only when granted) — never emitted as a
+            // duplicate legacy tile.
+            if (isset($nativeReactWidgets[$pluginName])) {
+                if (!$rightsSvc || $rightsSvc->canAccess($pluginName)) {
+                    $nativeWidgets[$nativeReactWidgets[$pluginName]] = true;
+                }
+                continue;
+            }
 
             // Rights: user must be granted this plugin (or the _root wildcard). Mirrors
             // DashboardPluginsController.php:92.
@@ -638,7 +650,13 @@ class MelisReactApiController extends MelisAbstractActionController
             return ($moduleRank[$a['module']] ?? 0) <=> ($moduleRank[$b['module']] ?? 0);
         });
 
-        return $this->jsonResponse(['success' => true, 'data' => $plugins]);
+        return $this->jsonResponse([
+            'success' => true,
+            'data' => $plugins,
+            // Native React widgets (widget-registry) the current user is granted — the dashboard
+            // gates its always-registered native widgets by this list.
+            'nativeWidgets' => array_keys($nativeWidgets),
+        ]);
     }
 
     // ─── /melis/react-api/rights/dashboard-plugins ───────────────────────────
