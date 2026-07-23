@@ -320,6 +320,12 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // Read-only endpoint: free the PHP session lock immediately so the dashboard's other cold
+        // requests (stats / legacy-plugins / layout) don't serialise behind this one. Nothing below
+        // writes to the session — the flash messenger is read-only here and the external News feed
+        // now goes through a cross-session FILE cache, not the session (see externalCached()).
+        $this->releaseSessionLock();
+
         $sm   = $this->getServiceManager();
         $data = [
             'news'          => ['count' => 0],
@@ -364,11 +370,16 @@ class MelisReactApiController extends MelisAbstractActionController
             }
         } catch (\Throwable $e) { /* keep 0 */ }
 
-        // News — external marketplace feed via cURL (short timeout), like the plugin.
+        // News — external marketplace feed via cURL (short timeout), like the plugin. Cached across
+        // sessions (10 min) so it doesn't reblock on every login: without this the feed was refetched
+        // on the FIRST dashboard open of each session (~0.7s+), on the critical path of the top bar.
         try {
-            $cfg     = $sm->get('MelisCoreConfig')->getItem('/meliscore/interface/melis_dashboardplugin/interface/melisdashboardplugin_section');
-            $newsCfg = $cfg['interface']['MelisCoreDashboardBubbleNewsMelisPlugin']['datas'] ?? null;
-            if (!empty($newsCfg['url'])) {
+            $newsCount = $this->externalCached('dashboard-news-count', 600, static function () use ($sm) {
+                $cfg     = $sm->get('MelisCoreConfig')->getItem('/meliscore/interface/melis_dashboardplugin/interface/melisdashboardplugin_section');
+                $newsCfg = $cfg['interface']['MelisCoreDashboardBubbleNewsMelisPlugin']['datas'] ?? null;
+                if (empty($newsCfg['url'])) {
+                    return 0;
+                }
                 $curl = curl_init();
                 curl_setopt($curl, CURLOPT_URL, $newsCfg['url']);
                 if (isset($newsCfg['filter'])) {
@@ -378,28 +389,26 @@ class MelisReactApiController extends MelisAbstractActionController
                 curl_setopt($curl, CURLOPT_CONNECTTIMEOUT, 3);
                 curl_setopt($curl, CURLOPT_TIMEOUT, 5);
                 curl_setopt($curl, CURLOPT_NOSIGNAL, 1);
-                $resp = json_decode((string) curl_exec($curl), true);
+                $raw = curl_exec($curl);
+                $curl_ok = ($raw !== false);
                 curl_close($curl);
-                if (!empty($resp['response']) && is_array($resp['response'])) {
-                    $data['news']['count'] = count($resp['response']);
+                // A failed transfer → null so externalCached serves the last known value / retries,
+                // instead of caching a spurious 0.
+                if (!$curl_ok) {
+                    return null;
                 }
+                $resp = json_decode((string) $raw, true);
+                return (!empty($resp['response']) && is_array($resp['response'])) ? count($resp['response']) : 0;
+            });
+            if ($newsCount !== null) {
+                $data['news']['count'] = (int) $newsCount;
             }
         } catch (\Throwable $e) { /* keep 0 */ }
 
-        // Updates — only meaningful when MelisMarketPlace is active; otherwise 0.
-        try {
-            $modules = $sm->get('MelisAssetManagerModulesService');
-            if ($modules->isModuleLoaded('MelisMarketPlace')) {
-                $res = $this->forward()->dispatch(
-                    'MelisMarketPlace\Controller\MelisMarketPlace',
-                    ['action' => 'isMarketplaceAccessible']
-                )->getVariables();
-                // Detailed update count needs the marketplace tool; expose availability as 0/at-least.
-                if (!empty($res['isMarketplaceAccessible'])) {
-                    $data['updates']['count'] = 0; // placeholder until marketplace count is wired
-                }
-            }
-        } catch (\Throwable $e) { /* keep 0 */ }
+        // Updates — count not yet wired (legacy always returned a placeholder 0 here). The former
+        // MelisMarketPlace `isMarketplaceAccessible` dispatch was a blocking cURL to marketplace
+        // (up to 5s) whose result was DISCARDED — removed so it no longer stalls the cold load.
+        // $data['updates']['count'] stays 0 until a real update count is implemented.
 
         return $this->jsonResponse(['success' => true, 'data' => $data]);
     }
@@ -415,6 +424,10 @@ class MelisReactApiController extends MelisAbstractActionController
         if (!$this->isAuthenticated()) {
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
+
+        // Read-only (DB counts only): free the session lock so this doesn't serialise with the
+        // dashboard's other cold requests sharing the same session cookie.
+        $this->releaseSessionLock();
 
         $defaults = [
             'kpis'     => ['users' => 0, 'sites' => 0, 'pages' => 0, 'languages' => 0],
@@ -492,6 +505,11 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // Read-only endpoint: free the session lock so the dashboard's other cold requests don't
+        // serialise behind it. The marketplace lookups below no longer write the session (they go
+        // through the cross-session file cache, see externalCached()), so this is safe.
+        $this->releaseSessionLock();
+
         $sm     = $this->getServiceManager();
         $config = null;
         try { $config = $sm->get('MelisCoreConfig'); } catch (\Throwable) {}
@@ -520,19 +538,28 @@ class MelisReactApiController extends MelisAbstractActionController
         // marketplace categories when reachable, else the offline fallback declared in
         // config/app.interface.php (/meliscore/datas/fallBacksection), then the custom sections it
         // appends. A section outside this list — or missing — falls into "Others", same as legacy.
-        $pluginsSvc = null;
-        try { $pluginsSvc = $sm->get('MelisCorePluginsService'); } catch (\Throwable) {}
-
         // Same rights gate as legacy (DashboardPluginsController::getDashboardPluginsMenuAction) —
         // the right key is the plugin CLASS name, stored under <melis_dashboardplugin> in usr_rights.
         $rightsSvc = null;
         try { $rightsSvc = $sm->get('MelisCoreDashboardPluginsService'); } catch (\Throwable) {}
 
-        $knownSections = [];
-        if ($pluginsSvc) {
-            try { $knownSections = (array) $pluginsSvc->getPackagistCategories(); } catch (\Throwable) {}
-        }
-        if (!$knownSections) {
+        // Marketplace section list — same source as MelisCorePluginsService::getPackagistCategories(),
+        // but fetched raw through the cross-session file cache (TTL 1h) instead of the service, which
+        // caches only in the PHP SESSION → a blocking HTTP call on the FIRST dashboard open of each
+        // login session. The raw fetch also writes nothing to the session, so the lock stays freed.
+        $knownSections = $this->externalCached('packagist-categories', 3600, static function () {
+            $raw = @file_get_contents('http://marketplace.melisplatform.com/melis-packagist/get-package-group', true);
+            if ($raw === false) return null; // transient failure → serve stale / fall back below
+            $decoded = json_decode($raw);
+            $out = [];
+            if (!empty($decoded)) {
+                foreach ($decoded as $val) {
+                    if (($val->module_count ?? 0) > 0) { $out[] = $val->mp_group_name; }
+                }
+            }
+            return $out;
+        });
+        if (empty($knownSections)) {
             try { $knownSections = (array) $config->getItem('/meliscore/datas/fallBacksection'); } catch (\Throwable) {}
         }
         $knownSections = array_values(array_unique(array_merge(
@@ -540,12 +567,24 @@ class MelisReactApiController extends MelisAbstractActionController
             ['MelisCommerce', 'Others', 'CustomProjects'],
         )));
 
-        // module → marketplace section, exactly like legacy (getMelisPublicModules with the
-        // $dashboardPlugin flag, which CamelCases the package name into the module name).
-        $publicModules = [];
-        if ($pluginsSvc) {
-            try { $publicModules = (array) $pluginsSvc->getMelisPublicModules(null, true); } catch (\Throwable) {}
-        }
+        // module → marketplace section, exactly like legacy getMelisPublicModules(null, true): the
+        // $dashboardPlugin flag CamelCases the package name into the module name. Same cross-session
+        // cache as above.
+        $publicModules = $this->externalCached('public-modules-dashboard', 3600, static function () {
+            $raw = @file_get_contents('http://marketplace.melisplatform.com/melis-packagist/get-package-list', true);
+            if ($raw === false) return null;
+            $decoded = json_decode($raw);
+            $out = [];
+            if (!empty($decoded)) {
+                foreach ($decoded as $moduleInfo) {
+                    $packageName = str_replace('melisplatform/', '', $moduleInfo->packageName);
+                    // $dashboardPlugin=true transform: CamelCase each dash-part, then drop the dashes.
+                    $packageName = str_replace('-', '', implode('-', array_map('ucfirst', explode('-', $packageName))));
+                    $out[$packageName] = ['section' => $moduleInfo->packageSection];
+                }
+            }
+            return $out;
+        }) ?? [];
 
         $plugins = [];
         foreach ($pluginNames as $pluginName) {
@@ -717,11 +756,15 @@ class MelisReactApiController extends MelisAbstractActionController
     // ─── /melis/react-api/dashboard/layout ───────────────────────────────────
 
     /**
-     * GET  → returns the saved React dashboard layout (JSON array of GridItems) from melis_core_dashboards.
-     * POST → receives a JSON array of GridItems, converts to XML, saves to melis_core_dashboards.
+     * GET  → returns the saved dashboard plugins (JSON: {pluginName, pluginId, x, y, w, h}[]) from melis_core_dashboards.
+     * POST → receives that same JSON, converts to the legacy XML schema, saves to melis_core_dashboards.
      *
-     * Uses dashboard_id = 'react_dashboard' so it never collides with the legacy PHP dashboard.
-     * XML format is intentionally compatible with the legacy savePlugins() schema so the table stays homogeneous.
+     * Uses dashboard_id = 'id_meliscore_toolstree_section_dashboard' — the SAME record the classic
+     * /melis dashboard reads/writes — so the React and legacy dashboards are ALWAYS consistent (one
+     * record, not two). The React client keys items by the REAL PHP plugin name so the legacy render
+     * (which does `$pluginManager->get($pluginName)`) keeps working. On save we MERGE: each plugin's
+     * existing per-instance config (children stored in the XML by savePluginConfigToXml) is preserved
+     * across a React position/remove change, so moving a tile never wipes the classic plugin's settings.
      */
     public function dashboardLayoutAction(): HttpResponse
     {
@@ -729,8 +772,12 @@ class MelisReactApiController extends MelisAbstractActionController
             return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
         }
 
+        // Layout load/save touches only the DB (melis_core_dashboards), never the session — free the
+        // session lock so it doesn't serialise with the dashboard's other cold requests.
+        $this->releaseSessionLock();
+
         $sm          = $this->getServiceManager();
-        $dashboardId = 'react_dashboard';
+        $dashboardId = 'id_meliscore_toolstree_section_dashboard';
 
         $userId = 0;
         try { $userId = (int) $this->getAuthStorage()->usr_id; } catch (\Throwable) {}
@@ -755,9 +802,9 @@ class MelisReactApiController extends MelisAbstractActionController
                 $items = [];
                 if ($xml && $xml->plugin) {
                     foreach ($xml->plugin as $p) {
-                        $id = (string) $p['plugin_id'];
                         $items[] = [
-                            'i' => $id,
+                            'pluginName' => (string) $p['plugin'],
+                            'pluginId'   => (string) $p['plugin_id'],
                             'x' => (int) $p->{'x-axis'},
                             'y' => (int) $p->{'y-axis'},
                             'w' => (int) $p->{'width'},
@@ -780,29 +827,75 @@ class MelisReactApiController extends MelisAbstractActionController
                     return $this->jsonResponse(['success' => false, 'error' => 'Invalid payload'], 400);
                 }
 
+                // Config préservée : file d'attente des nœuds <plugin> existants par nom de plugin.
+                // Ré-appariés dans l'ordre aux items entrants du même plugin → un déplacement/retrait
+                // React ne perd pas les réglages stockés dans le XML (savePluginConfigToXml) côté
+                // dashboard classique. On récupère aussi la ligne existante pour l'update (d_id).
+                $existing         = $tbl->getDashboardPlugins($dashboardId, $userId)->current();
+                $existingByPlugin = [];
+                if ($existing && !empty($existing->d_content)) {
+                    $prev = @simplexml_load_string($existing->d_content);
+                    if ($prev && $prev->plugin) {
+                        foreach ($prev->plugin as $p) {
+                            $existingByPlugin[(string) $p['plugin']][] = $p;
+                        }
+                    }
+                }
+                // Enfants de position (réécrits) — tout le reste est de la config à préserver.
+                $posKeys = ['x-axis' => 1, 'y-axis' => 1, 'width' => 1, 'height' => 1];
+
                 $pluginXmlData = '';
                 foreach ($items as $item) {
-                    $id = htmlspecialchars((string) ($item['i'] ?? ''), ENT_XML1);
-                    if (!$id) continue;
+                    $pluginName = trim((string) ($item['pluginName'] ?? ''));
+                    if ($pluginName === '') continue;
+                    $pluginId = (string) ($item['pluginId'] ?? $pluginName);
                     $x = (int) ($item['x'] ?? 0);
                     $y = (int) ($item['y'] ?? 0);
                     $w = (int) ($item['w'] ?? 1);
                     $h = (int) ($item['h'] ?? 1);
-                    $pluginXmlData .= "\n<plugin plugin=\"{$id}\" plugin_id=\"{$id}\">"
+
+                    $nameAttr = htmlspecialchars($pluginName, ENT_QUOTES | ENT_XML1);
+                    $idAttr   = htmlspecialchars($pluginId, ENT_QUOTES | ENT_XML1);
+
+                    // Config du prochain nœud existant de ce plugin (enfants hors position).
+                    $config = '';
+                    if (!empty($existingByPlugin[$pluginName])) {
+                        $prevNode = array_shift($existingByPlugin[$pluginName]);
+                        foreach ($prevNode->children() as $child) {
+                            if (isset($posKeys[$child->getName()])) continue;
+                            $config .= "\n\t" . $child->asXML();
+                        }
+                    }
+
+                    $pluginXmlData .= "\n<plugin plugin=\"{$nameAttr}\" plugin_id=\"{$idAttr}\">"
                         . "\n\t<x-axis><![CDATA[{$x}]]></x-axis>"
                         . "\n\t<y-axis><![CDATA[{$y}]]></y-axis>"
                         . "\n\t<height><![CDATA[{$h}]]></height>"
                         . "\n\t<width><![CDATA[{$w}]]></width>"
+                        . $config
                         . "\n</plugin>";
                 }
                 $xml = '<?xml version="1.0" encoding="UTF-8"?>' . "\n<Plugins>{$pluginXmlData}\n</Plugins>";
 
-                $existing      = $tbl->getDashboardPlugins($dashboardId, $userId)->current();
-                $existingId    = $existing ? ($existing->d_id ?? null) : null;
+                $existingId = $existing ? ($existing->d_id ?? null) : null;
                 $tbl->save(
                     ['d_dashboard_id' => $dashboardId, 'd_user_id' => $userId, 'd_content' => $xml],
                     $existingId
                 );
+
+                // Rejoue l'évènement legacy du save dashboard (comme
+                // DashboardPluginsController::saveDashboardPluginsAction) pour que SES listeners
+                // tournent aussi depuis le nouveau back-office — en particulier la purge du cache
+                // dashboard de l'utilisateur (MelisCoreClearCacheListenerListener). Sans ça, le
+                // dashboard CLASSIQUE (qui partage ce même record) continuerait de servir une version
+                // CACHÉE montrant les plugins retirés : la suppression (ou « tout supprimer ») ne s'y
+                // refléterait pas. Le listener est attaché à l'identifiant PARTAGÉ 'MelisCore' ; notre
+                // contrôleur est dans le namespace MelisReactApi → on ajoute l'identifiant pour que
+                // l'évènement l'atteigne. Le listener lit `success` + l'utilisateur en session.
+                $em = $this->getEventManager();
+                $em->addIdentifiers(['MelisCore']);
+                $em->trigger('meliscore_save_dashboard_plugin_end', $this, ['success' => 1]);
+
                 return $this->jsonResponse(['success' => true]);
             } catch (\Throwable $e) {
                 return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()]);
@@ -1384,5 +1477,48 @@ class MelisReactApiController extends MelisAbstractActionController
         if (session_status() === PHP_SESSION_ACTIVE) {
             @session_write_close();
         }
+    }
+
+    /**
+     * Cross-session cache for expensive GLOBAL external data (marketplace lists, news feed).
+     *
+     * The legacy services (MelisCorePluginsService::getPackagistCategories / getMelisPublicModules,
+     * the News bubble plugin) cache these only in the PHP SESSION, so the FIRST dashboard request of
+     * every new login session refetches them over HTTP (each `file_get_contents`/cURL blocks ~0.7s+)
+     * — the dashboard's cold-load latency. This caches the decoded payload to a file SHARED by all
+     * sessions, with a TTL, so the network cost is paid at most once per TTL for the whole platform
+     * (and never again inside a request that has already released its session lock).
+     *
+     * The producer returns `null` to signal a TRANSIENT failure (source unreachable): the result is
+     * not cached and, when available, the last cached value is served stale rather than a hole.
+     *
+     * @param callable():mixed $producer
+     * @return mixed the produced/cached value, or null on a first-ever failure
+     */
+    private function externalCached(string $key, int $ttlSeconds, callable $producer)
+    {
+        $dir  = sys_get_temp_dir() . '/melis-react-api-cache';
+        $file = $dir . '/' . preg_replace('/[^A-Za-z0-9_.-]/', '_', $key) . '.json';
+
+        $readCache = static function () use ($file) {
+            if (!is_file($file)) return null;
+            $decoded = json_decode((string) @file_get_contents($file), true);
+            return (is_array($decoded) && array_key_exists('v', $decoded)) ? $decoded : null;
+        };
+
+        $cached = $readCache();
+        if ($cached !== null && (time() - (int) filemtime($file)) < $ttlSeconds) {
+            return $cached['v'];
+        }
+
+        $value = $producer();
+        if ($value !== null) {
+            if (!is_dir($dir)) { @mkdir($dir, 0775, true); }
+            @file_put_contents($file, json_encode(['v' => $value]), LOCK_EX);
+            return $value;
+        }
+
+        // Transient failure: serve the last known value (even if stale) rather than a hole.
+        return $cached !== null ? $cached['v'] : null;
     }
 }
