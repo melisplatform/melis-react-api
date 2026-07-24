@@ -809,6 +809,10 @@ class MelisReactApiController extends MelisAbstractActionController
                             'y' => (int) $p->{'y-axis'},
                             'w' => (int) $p->{'width'},
                             'h' => (int) $p->{'height'},
+                            // Hauteur d'affichage React d'une tuile redimensionnée à la main (lignes de
+                            // 46px). Enfant à part, IGNORÉ par le dashboard classique (qui rend `height`
+                            // en 80px). Absent ⇒ null ⇒ la grille React auto-ajuste la hauteur.
+                            'reactH' => isset($p->{'react-height'}) ? (int) $p->{'react-height'} : null,
                         ];
                     }
                 }
@@ -842,7 +846,9 @@ class MelisReactApiController extends MelisAbstractActionController
                     }
                 }
                 // Enfants de position (réécrits) — tout le reste est de la config à préserver.
-                $posKeys = ['x-axis' => 1, 'y-axis' => 1, 'width' => 1, 'height' => 1];
+                // `react-height` en fait partie : c'est un état de disposition React (redimensionnement
+                // manuel), réécrit depuis le payload à chaque save, pas une config à figer.
+                $posKeys = ['x-axis' => 1, 'y-axis' => 1, 'width' => 1, 'height' => 1, 'react-height' => 1];
 
                 $pluginXmlData = '';
                 foreach ($items as $item) {
@@ -853,6 +859,10 @@ class MelisReactApiController extends MelisAbstractActionController
                     $y = (int) ($item['y'] ?? 0);
                     $w = (int) ($item['w'] ?? 1);
                     $h = (int) ($item['h'] ?? 1);
+                    // Hauteur d'affichage React d'un redimensionnement MANUEL (lignes 46px). Écrite dans
+                    // un enfant <react-height> que le dashboard classique ignore ; absente sinon (la
+                    // grille React auto-ajuste). > 0 requis (0/null = pas de réglage manuel).
+                    $reactH = isset($item['reactH']) ? (int) $item['reactH'] : 0;
 
                     $nameAttr = htmlspecialchars($pluginName, ENT_QUOTES | ENT_XML1);
                     $idAttr   = htmlspecialchars($pluginId, ENT_QUOTES | ENT_XML1);
@@ -867,11 +877,14 @@ class MelisReactApiController extends MelisAbstractActionController
                         }
                     }
 
+                    $reactHXml = $reactH > 0 ? "\n\t<react-height><![CDATA[{$reactH}]]></react-height>" : '';
+
                     $pluginXmlData .= "\n<plugin plugin=\"{$nameAttr}\" plugin_id=\"{$idAttr}\">"
                         . "\n\t<x-axis><![CDATA[{$x}]]></x-axis>"
                         . "\n\t<y-axis><![CDATA[{$y}]]></y-axis>"
                         . "\n\t<height><![CDATA[{$h}]]></height>"
                         . "\n\t<width><![CDATA[{$w}]]></width>"
+                        . $reactHXml
                         . $config
                         . "\n</plugin>";
                 }
@@ -1352,7 +1365,19 @@ class MelisReactApiController extends MelisAbstractActionController
             // Rights are keyed by melisKey, which can differ from the leftmenu array key
             // (case/prefix mismatch for some modules — see buildLevel2 note). Use the melisKey.
             $toolAccessKey = $toolConfig['conf']['melisKey'] ?? $toolKey;
-            if (!$melisRights->canAccess($toolAccessKey)) {
+            // Wrapper-node trap, one level deeper than buildLevel2's: a pure CONTAINER node — it has
+            // children but no forward of its own — is never granted directly. The rights editor only
+            // writes `isTool` nodes, and a container is not one (buildRightsXml never emits its id), so
+            // its melisKey is ungrantable and gating on its own canAccess() hid the whole group from
+            // every non-admin no matter what was ticked. That is the "Tool creation & Design" shape:
+            // the "Tools" wrapper `meliscore_tool_tools` (no forward) holds MelisToolCreator /
+            // MelisTemplatingPluginCreator / MelisDashboardPluginCreator — granting those three does
+            // NOT put the wrapper in the allow-set, so admins saw the section and granted users did not.
+            // A container's visibility comes from its children: the sub-tool loop below rights-gates each
+            // child, and the empty-leaf prune (no forward + no navigable child) discards the wrapper when
+            // none survives — so nothing leaks. Only gate a genuine LEAF (a forward of its own).
+            $isContainer = empty($toolConfig['forward']) && !empty($toolConfig['interface']);
+            if (!$isContainer && !$melisRights->canAccess($toolAccessKey)) {
                 continue;
             }
             if (!($toolConfig['conf']['left_menu_display'] ?? true)) {
