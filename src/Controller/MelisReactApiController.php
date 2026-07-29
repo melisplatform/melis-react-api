@@ -588,18 +588,9 @@ class MelisReactApiController extends MelisAbstractActionController
 
         $plugins = [];
         foreach ($pluginNames as $pluginName) {
-            // Native React equivalent: still RIGHTS-GATED, but reported via `nativeWidgets` (so the
-            // React dashboard shows/keeps its native widget only when granted) — never emitted as a
-            // duplicate legacy tile.
-            if (isset($nativeReactWidgets[$pluginName])) {
-                if (!$rightsSvc || $rightsSvc->canAccess($pluginName)) {
-                    $nativeWidgets[$nativeReactWidgets[$pluginName]] = true;
-                }
-                continue;
-            }
-
             // Rights: user must be granted this plugin (or the _root wildcard). Mirrors
-            // DashboardPluginsController.php:92.
+            // DashboardPluginsController.php:92. Applied to native-equivalent plugins too — same
+            // "no rights service → allowed" semantics as before.
             if ($rightsSvc && !$rightsSvc->canAccess($pluginName)) continue;
 
             // Modules external to MelisCore register via a conf.type indirection pointing to their
@@ -612,9 +603,30 @@ class MelisReactApiController extends MelisAbstractActionController
             if ($typePath) {
                 try { $pluginConfig = $config->getItem($typePath); } catch (\Throwable) { $pluginConfig = null; }
             }
-            if (empty($pluginConfig['datas'])) continue;
 
-            $datas = $pluginConfig['datas'];
+            $datas = $pluginConfig['datas'] ?? [];
+
+            // Description shown by the legacy palette as the item's `title` attribute (native browser
+            // tooltip, cf. dashboard-menu-content.phtml) — forwarded so React can show the same text.
+            $description = (string) ($datas['description'] ?? '');
+            if ($description !== '' && str_starts_with($description, 'tr_')) {
+                $translated = '';
+                if ($translationSvc) {
+                    try { $translated = (string) $translationSvc->getMessage($description); } catch (\Throwable) {}
+                }
+                // Untranslated key → no tooltip at all rather than a raw `tr_…` string on screen.
+                $description = (str_starts_with($translated, 'tr_') ? '' : $translated);
+            }
+
+            // Native React equivalent: reported via `nativeWidgets` (so the React dashboard shows/keeps
+            // its native widget only when granted) — never emitted as a duplicate legacy tile. Its
+            // description still travels, so the native palette item gets the same tooltip.
+            if (isset($nativeReactWidgets[$pluginName])) {
+                $nativeWidgets[$nativeReactWidgets[$pluginName]] = $description;
+                continue;
+            }
+
+            if (empty($datas)) continue;
 
             // Bubbles (News/Updates/Notifications/Messages) and the drag-drop grid container are
             // dashboard plugins too, but not addable widgets — they're rendered elsewhere already.
@@ -662,6 +674,8 @@ class MelisReactApiController extends MelisAbstractActionController
             $plugins[] = [
                 'pluginName' => $pluginName,
                 'title'      => $title ?: $pluginName,
+                // Tooltip text of the palette item, exactly like the legacy plugin menu.
+                'description' => $description,
                 'icon'       => (string) ($datas['icon'] ?? ''),
                 'module'      => $module,
                 'moduleLabel' => $moduleLabel ?: $module,
@@ -695,6 +709,9 @@ class MelisReactApiController extends MelisAbstractActionController
             // Native React widgets (widget-registry) the current user is granted — the dashboard
             // gates its always-registered native widgets by this list.
             'nativeWidgets' => array_keys($nativeWidgets),
+            // Descriptions of those native widgets, taken from the legacy plugin config they mirror,
+            // so their palette item shows the same tooltip as every other plugin.
+            'nativeWidgetDescriptions' => array_filter($nativeWidgets, static fn ($d) => $d !== ''),
         ]);
     }
 
