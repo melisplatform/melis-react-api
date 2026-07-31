@@ -848,6 +848,20 @@ class MelisReactApiController extends MelisAbstractActionController
                     return $this->jsonResponse(['success' => false, 'error' => 'Invalid payload'], 400);
                 }
 
+                // ⚠️ FILET ANTI-EFFACEMENT (serveur) — un record VIDE n'est écrit QUE sur demande
+                // explicite (`?allowEmpty=1`, posé par le seul « supprimer tous les plugins », qui
+                // est confirmé par l'utilisateur). Tout autre payload vide est REFUSÉ sans toucher
+                // à la base : c'est exactement ce qui est arrivé à un utilisateur dont le
+                // `d_content` s'est retrouvé réduit à `<Plugins></Plugins>`. Les garde-fous côté
+                // React (cf. `persist`) restent la 1ʳᵉ ligne de défense ; celui-ci est le dernier
+                // rempart, valable quel que soit le bug client.
+                if ($items === [] && $this->params()->fromQuery('allowEmpty', '') !== '1') {
+                    return $this->jsonResponse([
+                        'success' => false,
+                        'error'   => 'Refusing to clear the dashboard without an explicit request',
+                    ], 409);
+                }
+
                 // Config préservée : file d'attente des nœuds <plugin> existants par nom de plugin.
                 // Ré-appariés dans l'ordre aux items entrants du même plugin → un déplacement/retrait
                 // React ne perd pas les réglages stockés dans le XML (savePluginConfigToXml) côté
