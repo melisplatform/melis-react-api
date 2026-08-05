@@ -147,10 +147,10 @@ class MelisReactApiController extends MelisAbstractActionController
      */
     public function langsAction(): HttpResponse
     {
-        if (!$this->isAuthenticated()) {
-            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
-        }
-
+        // Endpoint PUBLIC (pas de garde d'auth) : le SPA charge les langues au boot, y compris sur
+        // l'écran de LOGIN (sélecteur de langue) — avant authentification. Renvoyer 401 ici polluait
+        // la console de 401 au chargement du login (ticket 0010874). La liste des langues du BO n'est
+        // pas sensible ; hors session on retombe simplement sur la locale par défaut.
         $container     = new \Laminas\Session\Container('meliscore');
         $currentLocale = (string) ($container['melis-lang-locale'] ?? 'en_EN');
         $currentId     = (int) ($container['melis-lang-id'] ?? 0);
