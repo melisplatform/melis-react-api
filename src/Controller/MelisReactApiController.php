@@ -882,10 +882,22 @@ class MelisReactApiController extends MelisAbstractActionController
                 $posKeys = ['x-axis' => 1, 'y-axis' => 1, 'width' => 1, 'height' => 1, 'react-height' => 1];
 
                 $pluginXmlData = '';
+                $seqByPlugin   = [];
                 foreach ($items as $item) {
                     $pluginName = trim((string) ($item['pluginName'] ?? ''));
                     if ($pluginName === '') continue;
-                    $pluginId = (string) ($item['pluginId'] ?? $pluginName);
+                    // `plugin_id` s'écrit à la CONVENTION LEGACY, pas avec l'id d'instance React
+                    // (`legacy-<PluginName>`). Ce record est partagé avec le dashboard classique, qui
+                    // dérive de cet attribut la classe CSS du conteneur (plugin-container.phtml) :
+                    // `legacy-AverageOpportunityWonPlugin` donnait `.legacy--average-opportunity-won-plugin`,
+                    // et tout JS de plugin scopé sur `.average-opportunity-won` cessait de matcher →
+                    // widget rendu mais inerte côté legacy. Cf. addLegacyPluginIdClass() dans
+                    // MelisReactOverride pour le pendant côté iframe React.
+                    // Sans risque pour React : le client redérive ses ids du NOM de plugin et ignore
+                    // `pluginId` (cf. recordsToLayout), et la config par plugin vit dans une AUTRE
+                    // ligne (`react_dashboard_config`), indexée par nom de plugin.
+                    $seq      = $seqByPlugin[$pluginName] = ($seqByPlugin[$pluginName] ?? 0) + 1;
+                    $pluginId = $this->legacyPluginInstanceId($pluginName, $seq);
                     $x = (int) ($item['x'] ?? 0);
                     $y = (int) ($item['y'] ?? 0);
                     $w = (int) ($item['w'] ?? 1);
@@ -947,6 +959,60 @@ class MelisReactApiController extends MelisAbstractActionController
         }
 
         return $this->jsonResponse(['success' => false, 'error' => 'Method not allowed'], 405);
+    }
+
+    /**
+     * `plugin_id` d'instance à la convention du dashboard CLASSIQUE, pour le record partagé.
+     *
+     * Legacy fabrique cet id comme `<datas.plugin_id>_<timestamp>` (MelisCoreDashboardTemplatingPlugin),
+     * et `plugin-container.phtml` en dérive la classe CSS du conteneur en coupant au 1ᵉʳ `_` :
+     *     strtolower(explode('_', preg_replace('/(?<!^)([A-Z])/', '-$1', $id))[0])
+     * D'où `AverageOpportunityWon_1748…` → `.average-opportunity-won`, la classe sur laquelle se
+     * scope le JS des plugins. On reproduit exactement cette forme, avec un compteur d'instance
+     * (stable et lisible) à la place du timestamp : plusieurs exemplaires d'un même plugin restent
+     * distincts, et le suffixe est de toute façon coupé pour la classe.
+     *
+     * `datas.plugin_id` est déclaré par le plugin ; on le résout via le nœud sous lequel les
+     * plugins dashboard s'enregistrent. À défaut, on retombe sur le nom du plugin (comportement
+     * antérieur — jamais pire que l'existant).
+     */
+    private function legacyPluginInstanceId(string $pluginName, int $seq): string
+    {
+        static $declaredIds = [];
+
+        if (!array_key_exists($pluginName, $declaredIds)) {
+            $declared = null;
+            try {
+                $config = $this->getServiceManager()->get('MelisCoreConfig');
+                $node   = $config->getItem(
+                    '/meliscore/interface/melis_dashboardplugin/interface/melisdashboardplugin_section'
+                    . '/interface/' . $pluginName
+                );
+
+                // Deux formes d'enregistrement coexistent :
+                //  • INLINE — les plugins de MelisCore déclarent `datas` directement sur le nœud de
+                //    section (ex. MelisCoreDashboardAnnouncementPlugin → plugin_id 'AnnouncementPlugin').
+                //  • INDIRECTE — les modules tiers n'y mettent qu'un `conf.type` pointant vers leur
+                //    vraie déclaration (ex. `/nehsdashboardplugins/interface/AverageOpportunityWonPlugin`).
+                // Ne traiter que la seconde ferait retomber les plugins MelisCore sur le nom de classe,
+                // et leur classe CSS de conteneur (.announcement-plugin) changerait — régression pour
+                // tout CSS/JS legacy qui la cible. On tente donc l'inline D'ABORD, puis l'indirection.
+                $datas = is_array($node) ? ($node['datas'] ?? null) : null;
+                if (!is_array($datas) || empty($datas['plugin_id'])) {
+                    $type  = is_array($node) ? (string) ($node['conf']['type'] ?? '') : '';
+                    $datas = $type !== '' ? $config->getItem('/' . trim($type, '/') . '/datas') : null;
+                }
+                if (is_array($datas) && !empty($datas['plugin_id']) && is_string($datas['plugin_id'])) {
+                    $declared = $datas['plugin_id'];
+                }
+            } catch (\Throwable) {
+                // config indisponible → repli sur le nom du plugin
+            }
+
+            $declaredIds[$pluginName] = $declared ?? $pluginName;
+        }
+
+        return $declaredIds[$pluginName] . '_' . $seq;
     }
 
     // ─── /melis/react-api/menu ───────────────────────────────────────────────
