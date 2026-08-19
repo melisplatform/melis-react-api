@@ -236,66 +236,18 @@ class MelisReactApiController extends MelisAbstractActionController
         }
 
         try {
-            $modulesSrv = new \MelisAssetManager\Service\MelisModulesService();
-            $active     = $modulesSrv->getMelisActiveModules();
+            [$bricks, $files] = $this->collectBricks();
 
-            $bricks = [];
-            foreach ($active as $module) {
-                if (!is_string($module) || $module === '') {
-                    continue;
-                }
-                $path = $modulesSrv->getModulePath($module, true);
-                if (!$path) {
-                    continue;
-                }
-                $manifestFile = rtrim($path, '/\\') . '/public/ui-react/brick.manifest.json';
-                if (!is_file($manifestFile)) {
-                    continue;
-                }
-                $manifest = json_decode((string) file_get_contents($manifestFile), true);
-                if (!is_array($manifest)) {
-                    continue;
-                }
-                // A module may ship a SINGLE brick (manifest = one object) or MULTIPLE bricks
-                // (manifest with a `bricks` array — one tool per entry, all built into the same
-                // bundle which self-registers each by id). Normalise to a list of defs.
-                $defs = (isset($manifest['bricks']) && is_array($manifest['bricks']))
-                    ? $manifest['bricks']
-                    : [$manifest];
-
-                foreach ($defs as $def) {
-                    if (!is_array($def)) {
-                        continue;
-                    }
-                    $entry = $def['entry'] ?? $manifest['entry'] ?? 'brick.js';
-                    // Cache-bust: the bundle filename is not content-hashed, so append the
-                    // built file's mtime — each rebuild yields a new URL and the browser
-                    // never serves a stale brick.
-                    $bundleFile = rtrim($path, '/\\') . '/public/ui-react/' . $entry;
-                    $ver        = is_file($bundleFile) ? (string) filemtime($bundleFile) : '0';
-                    $bricks[] = [
-                        'id'         => $def['id'] ?? strtolower($module),
-                        'module'     => $module,
-                        'route'      => $def['route'] ?? null,
-                        'label'      => $def['label'] ?? $module,
-                        'forwardKey' => $def['forwardKey'] ?? null,
-                        'melisKey'   => $def['melisKey'] ?? null,
-                        // Opt-in to the host sub-tab pattern (native "User Management" look): the
-                        // host collapses /[section]/[tool]/:id to ONE tool tab + renders SubTabBar
-                        // for opened records. Off by default (a brick keeps a top tab per entity).
-                        'subTabs'    => (bool) ($def['subTabs'] ?? false),
-                        // Opt-in to persistent mounting: the host keeps the brick MOUNTED (CSS-hidden)
-                        // once visited, so switching tool tabs never refetches its data nor reloads its
-                        // legacy iframe. The host scopes the brick's router context to its own route and
-                        // passes it an `active` prop (see Shell.tsx BrickHost); a brick may still freeze
-                        // its own route-reading on `active` (see CmsStylePage).
-                        'persistent' => (bool) ($def['persistent'] ?? false),
-                        'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
-                    ];
-                }
-            }
-
-            return $this->jsonResponse(['success' => true, 'data' => $bricks]);
+            return $this->jsonResponse([
+                'success' => true,
+                'data'    => $bricks,
+                // ONE URL serving every brick above, concatenated (see bricksBundleAction).
+                // The shell loads this instead of the N per-brick `bundleUrl`s, which each cost a
+                // full Melis bootstrap (~0.3s) because module public/ assets are served by PHP.
+                'bundle'  => [
+                    'url' => '/melis/react-api/bricks-bundle.js?v=' . $this->bricksSignature($files),
+                ],
+            ]);
         } catch (\Throwable $e) {
             return $this->jsonResponse([
                 'success' => false,
@@ -304,6 +256,179 @@ class MelisReactApiController extends MelisAbstractActionController
             ], 500);
         }
     }
+
+    // ─── /melis/react-api/bricks-bundle.js ───────────────────────────────────
+
+    /**
+     * Every active module's brick bundle, concatenated into ONE JavaScript response.
+     *
+     * WHY: a brick lives in its module's `public/ui-react/`, which is NOT under the document root —
+     * Apache's FallbackResource sends the request to index.php and MelisAssetManager reads the file
+     * on a bootstrap hook. So each brick costs a full Melis boot (~0.3s measured) instead of the
+     * ~2ms a truly static file costs. With ~36 active bricks that is ~11s of cumulative PHP work
+     * on a cold load. Serving them all from a single request pays that boot ONCE.
+     *
+     * Concatenation is safe: each brick is a self-contained IIFE that registers itself by id on
+     * `window.__MELIS_BRICK_COMPONENTS__` (via `window.__melisRegisterBrick`), consumes React from
+     * host globals, and never depends on another brick. Each is still wrapped in try/catch here so
+     * one broken bundle cannot abort the ones after it — the isolation separate <script> tags gave
+     * for free.
+     *
+     * The list is computed per-request from the ACTIVE modules, so the modularity rule ("a brick
+     * exists if and only if its module is active") is preserved — nothing is precomputed at build
+     * time. The `?v=` signature (name+mtime+size of every file) changes whenever any brick is
+     * rebuilt, which is what makes the immutable, 1-year cache safe.
+     */
+    public function bricksBundleAction(): HttpResponse
+    {
+        /** @var HttpResponse $response */
+        $response = $this->getResponse();
+
+        if (!$this->isAuthenticated()) {
+            $response->setStatusCode(401);
+            $response->getHeaders()->addHeaders([
+                'Content-Type'  => 'application/javascript; charset=utf-8',
+                'Cache-Control' => 'no-store',
+            ]);
+            $response->setContent("/* Unauthenticated */\n");
+            return $response;
+        }
+
+        // Read-only: free the session lock before the (I/O bound) concatenation so this request
+        // doesn't serialise the shell's other boot calls sharing the same session cookie.
+        $this->releaseSessionLock();
+
+        $out = "/* Melis React bricks bundle */\n";
+        try {
+            [, $files] = $this->collectBricks();
+            foreach ($files as $key => $file) {
+                $code = @file_get_contents($file);
+                if ($code === false) {
+                    continue;
+                }
+                // Label only — keep it free of anything that could close the JS comment/string.
+                $label = preg_replace('#[^A-Za-z0-9_./-]#', '', $key);
+                // try/catch keeps a failing brick from killing the rest of the bundle; the leading
+                // `;` neutralises a missing trailing semicolon in the previous chunk (bricks are
+                // IIFEs starting with `(`, an ASI hazard).
+                $out .= "\n;/* --- {$label} --- */\ntry{\n" . $code
+                      . "\n}catch(e){console.error('[melis] brick failed: {$label}',e)}\n";
+            }
+        } catch (\Throwable $e) {
+            $out .= "\nconsole.error(" . json_encode('[melis] bricks bundle error: ' . $e->getMessage()) . ");\n";
+        }
+
+        $response->setStatusCode(200);
+        $response->getHeaders()->addHeaders([
+            'Content-Type'           => 'application/javascript; charset=utf-8',
+            'X-Content-Type-Options' => 'nosniff',
+            // The URL carries a content signature, so the body at a given URL never changes.
+            'Cache-Control'          => 'public, max-age=31536000, immutable',
+        ]);
+        $response->setContent($out);
+        return $response;
+    }
+
+    /**
+     * Scans the ACTIVE modules for React bricks — the single source of truth shared by
+     * {@see reactModulesAction} (discovery JSON) and {@see bricksBundleAction} (concatenated JS).
+     *
+     * A module contributes a brick by placing `public/ui-react/brick.manifest.json` in its package.
+     * Only modules currently loaded (melis.module.load.php / component loaders) are enumerated, so a
+     * brick is exposed if and only if its module is active — that is what makes the React UI modular.
+     *
+     * @return array{0: array<int, array<string, mixed>>, 1: array<string, string>}
+     *         [0] brick definitions (as returned by /react-modules),
+     *         [1] absolute path of each distinct bundle file, keyed by "Module/entry" (a module may
+     *             declare several bricks built into ONE file — it must be concatenated only once).
+     */
+    private function collectBricks(): array
+    {
+        $modulesSrv = new \MelisAssetManager\Service\MelisModulesService();
+        $active     = $modulesSrv->getMelisActiveModules();
+
+        $bricks = [];
+        $files  = [];
+        foreach ($active as $module) {
+            if (!is_string($module) || $module === '') {
+                continue;
+            }
+            $path = $modulesSrv->getModulePath($module, true);
+            if (!$path) {
+                continue;
+            }
+            $manifestFile = rtrim($path, '/\\') . '/public/ui-react/brick.manifest.json';
+            if (!is_file($manifestFile)) {
+                continue;
+            }
+            $manifest = json_decode((string) file_get_contents($manifestFile), true);
+            if (!is_array($manifest)) {
+                continue;
+            }
+            // A module may ship a SINGLE brick (manifest = one object) or MULTIPLE bricks
+            // (manifest with a `bricks` array — one tool per entry, all built into the same
+            // bundle which self-registers each by id). Normalise to a list of defs.
+            $defs = (isset($manifest['bricks']) && is_array($manifest['bricks']))
+                ? $manifest['bricks']
+                : [$manifest];
+
+            foreach ($defs as $def) {
+                if (!is_array($def)) {
+                    continue;
+                }
+                $entry = $def['entry'] ?? $manifest['entry'] ?? 'brick.js';
+                // Cache-bust: the bundle filename is not content-hashed, so append the
+                // built file's mtime — each rebuild yields a new URL and the browser
+                // never serves a stale brick.
+                $bundleFile = rtrim($path, '/\\') . '/public/ui-react/' . $entry;
+                $ver        = is_file($bundleFile) ? (string) filemtime($bundleFile) : '0';
+                if (is_file($bundleFile)) {
+                    $files[$module . '/' . $entry] = $bundleFile;
+                }
+                $bricks[] = [
+                    'id'         => $def['id'] ?? strtolower($module),
+                    'module'     => $module,
+                    'route'      => $def['route'] ?? null,
+                    'label'      => $def['label'] ?? $module,
+                    'forwardKey' => $def['forwardKey'] ?? null,
+                    'melisKey'   => $def['melisKey'] ?? null,
+                    // Opt-in to the host sub-tab pattern (native "User Management" look): the
+                    // host collapses /[section]/[tool]/:id to ONE tool tab + renders SubTabBar
+                    // for opened records. Off by default (a brick keeps a top tab per entity).
+                    'subTabs'    => (bool) ($def['subTabs'] ?? false),
+                    // Opt-in to persistent mounting: the host keeps the brick MOUNTED (CSS-hidden)
+                    // once visited, so switching tool tabs never refetches its data nor reloads its
+                    // legacy iframe. The host scopes the brick's router context to its own route and
+                    // passes it an `active` prop (see Shell.tsx BrickHost).
+                    'persistent' => (bool) ($def['persistent'] ?? false),
+                    // Per-brick URL, served by MelisAssetManager. Kept as the FALLBACK path: the
+                    // shell prefers the concatenated `bundle.url` and only falls back to these if
+                    // that single request fails.
+                    'bundleUrl'  => '/' . $module . '/ui-react/' . $entry . '?v=' . $ver,
+                ];
+            }
+        }
+
+        return [$bricks, $files];
+    }
+
+    /**
+     * Content signature of the whole brick set — name + mtime + size of every bundle file.
+     * Any rebuild, added or removed module changes it, hence changes the bundle URL, which is
+     * what lets {@see bricksBundleAction} answer with a 1-year immutable cache.
+     *
+     * @param array<string, string> $files
+     */
+    private function bricksSignature(array $files): string
+    {
+        $parts = [];
+        foreach ($files as $key => $file) {
+            $parts[] = $key . ':' . @filemtime($file) . ':' . @filesize($file);
+        }
+        sort($parts);
+        return substr(sha1(implode('|', $parts)), 0, 12);
+    }
+
 
     // ─── /melis/react-api/dashboard/bubbles ──────────────────────────────────
 

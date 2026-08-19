@@ -48,6 +48,17 @@ return [
                                     'defaults' => ['action' => 'langs'],
                                 ],
                             ],
+                            // ── React bricks: ALL active modules' bundles, concatenated ──
+                            // One request instead of ~50 (each per-brick asset URL costs a full
+                            // Melis bootstrap). Literal `.js` route so Apache/mod_deflate gzips it
+                            // and the browser treats it as a script.
+                            'bricks-bundle' => [
+                                'type'    => 'Literal',
+                                'options' => [
+                                    'route'    => '/bricks-bundle.js',
+                                    'defaults' => ['action' => 'bricksBundle'],
+                                ],
+                            ],
                             // ── React bricks discovery (modular UI) ──────────
                             'react-modules' => [
                                 'type'    => 'Segment',
