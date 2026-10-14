@@ -108,6 +108,42 @@ class MelisReactApiController extends MelisAbstractActionController
         }
     }
 
+    /**
+     * GET /melis/react-api/rights/microservices — catalogue des microservices déclarés
+     * (section « API / microservices » de l'éditeur de droits, audit C4). Énuméré par le core
+     * depuis la config fusionnée : les modules ne déclarent QUE leur app.microservice.php.
+     * `description` (clé tr_…) traduite dans la locale courante, comme rightsCapabilities.
+     */
+    public function rightsMicroservicesAction(): HttpResponse
+    {
+        if (!$this->isAuthenticated()) {
+            return $this->jsonResponse(['success' => false, 'error' => 'Unauthenticated'], 401);
+        }
+        try {
+            $catalog = \MelisCore\Service\MelisCoreMicroserviceRightsService::listCatalog(
+                $this->getServiceManager()->get('config')
+            );
+            $transSvc = null;
+            try { $transSvc = $this->getServiceManager()->get('MelisCoreTranslation'); } catch (\Throwable) {}
+            $localeContainer = new \Laminas\Session\Container('meliscore');
+            $currentLocale   = (string) ($localeContainer['melis-lang-locale'] ?? 'en_EN');
+            foreach ($catalog as &$group) {
+                foreach ($group['services'] as &$svc) {
+                    if ($transSvc && str_starts_with($svc['description'], 'tr_')) {
+                        $translated = (string) $transSvc->getMessage($svc['description'], $currentLocale);
+                        if ($translated !== '' && $translated !== $svc['description']) {
+                            $svc['description'] = $translated;
+                        }
+                    }
+                }
+            }
+            unset($group, $svc);
+            return $this->jsonResponse(['success' => true, 'data' => $catalog]);
+        } catch (\Throwable $e) {
+            return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()], 500);
+        }
+    }
+
     /** Traduit récursivement les `label` (clés `tr_...`) d'un nœud de capacités ; laisse les listes plates intactes. */
     private function translateCapLabels($node, $transSvc, $locale = 'en_EN')
     {

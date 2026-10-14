@@ -108,6 +108,15 @@ return [
                                     'defaults' => ['action' => 'rightsCapabilities'],
                                 ],
                             ],
+                            // ── Catalogue des microservices déclarés (section « API / microservices »
+                            //    de l'éditeur de droits — un seul droit d'accès par service, audit C4) ──
+                            'rights-microservices' => [
+                                'type'    => 'Segment',
+                                'options' => [
+                                    'route'    => '/rights/microservices[/]',
+                                    'defaults' => ['action' => 'rightsMicroservices'],
+                                ],
+                            ],
                             // ── Dashboard layout (GET=load, POST=save) ──────────
                             'dashboard-layout' => [
                                 'type'    => 'Segment',
