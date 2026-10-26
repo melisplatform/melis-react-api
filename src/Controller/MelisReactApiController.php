@@ -104,7 +104,7 @@ class MelisReactApiController extends MelisAbstractActionController
             }
             return $this->jsonResponse(['success' => true, 'data' => (object) $out]);
         } catch (\Throwable $e) {
-            return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()], 500);
+            return $this->genericError($e);
         }
     }
 
@@ -140,7 +140,7 @@ class MelisReactApiController extends MelisAbstractActionController
             unset($group, $svc);
             return $this->jsonResponse(['success' => true, 'data' => $catalog]);
         } catch (\Throwable $e) {
-            return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()], 500);
+            return $this->genericError($e);
         }
     }
 
@@ -239,15 +239,7 @@ class MelisReactApiController extends MelisAbstractActionController
             $assets = \MelisReactOverride\Service\PlatformAssetsService::build($this->getServiceManager());
             return $this->jsonResponse(['success' => true, 'data' => $assets]);
         } catch (\Throwable $e) {
-            return $this->jsonResponse([
-                'success' => false,
-                'error'   => $e->getMessage(),
-                'file'    => $e->getFile() . ':' . $e->getLine(),
-                'trace'   => array_map(
-                    fn($f) => ($f['file'] ?? '?') . ':' . ($f['line'] ?? '?') . ' ' . ($f['function'] ?? ''),
-                    array_slice($e->getTrace(), 0, 8)
-                ),
-            ], 500);
+            return $this->genericError($e);
         }
     }
 
@@ -285,11 +277,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 ],
             ]);
         } catch (\Throwable $e) {
-            return $this->jsonResponse([
-                'success' => false,
-                'error'   => $e->getMessage(),
-                'file'    => $e->getFile() . ':' . $e->getLine(),
-            ], 500);
+            return $this->genericError($e);
         }
     }
 
@@ -351,7 +339,9 @@ class MelisReactApiController extends MelisAbstractActionController
                       . "\n}catch(e){console.error('[melis] brick failed: {$label}',e)}\n";
             }
         } catch (\Throwable $e) {
-            $out .= "\nconsole.error(" . json_encode('[melis] bricks bundle error: ' . $e->getMessage()) . ");\n";
+            // SECURITY (audit RA-M2) : plus de message d'exception injecté dans le JS servi.
+            error_log('MelisReactApi bricks bundle: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+            $out .= "\nconsole.error('[melis] bricks bundle error (see server log)');\n";
         }
 
         $response->setStatusCode(200);
@@ -630,18 +620,28 @@ class MelisReactApiController extends MelisAbstractActionController
         } catch (\Throwable) {}
 
         // Recent activity — last N users to log in.
+        /**
+         * SECURITY (audit RA-M1) : l'activité NOMINATIVE (id, nom complet, date de connexion
+         * des derniers utilisateurs) partait à TOUT compte authentifié — matière à ciblage
+         * (spear-phishing, horaires de présence). Elle n'est renvoyée qu'aux détenteurs du
+         * droit de l'outil Utilisateurs ; les autres comptes reçoivent les seuls KPIs anonymes.
+         */
         $activity = [];
-        try {
-            $results = $sm->get('MelisCoreTableUser')->getLastLoggedInUsers(8);
-            foreach ((array) ($results ? $results->toArray() : []) as $u) {
-                $name = trim(($u['usr_firstname'] ?? '') . ' ' . ($u['usr_lastname'] ?? ''));
-                $activity[] = [
-                    'id'        => (int) ($u['usr_id'] ?? 0),
-                    'name'      => $name !== '' ? $name : ($u['usr_login'] ?? 'User'),
-                    'loginDate' => $u['usr_last_login_date'] ?? null,
-                ];
-            }
-        } catch (\Throwable) {}
+        $canSeeUsers = false;
+        try { $canSeeUsers = (bool) $sm->get('MelisCoreRights')->canAccess('meliscore_tool_user'); } catch (\Throwable) {}
+        if ($canSeeUsers) {
+            try {
+                $results = $sm->get('MelisCoreTableUser')->getLastLoggedInUsers(8);
+                foreach ((array) ($results ? $results->toArray() : []) as $u) {
+                    $name = trim(($u['usr_firstname'] ?? '') . ' ' . ($u['usr_lastname'] ?? ''));
+                    $activity[] = [
+                        'id'        => (int) ($u['usr_id'] ?? 0),
+                        'name'      => $name !== '' ? $name : ($u['usr_login'] ?? 'User'),
+                        'loginDate' => $u['usr_last_login_date'] ?? null,
+                    ];
+                }
+            } catch (\Throwable) {}
+        }
 
         return $this->jsonResponse([
             'success' => true,
@@ -996,7 +996,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 }
                 return $this->jsonResponse(['success' => true, 'data' => $items]);
             } catch (\Throwable $e) {
-                return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()]);
+                return $this->genericError($e);
             }
         }
 
@@ -1115,7 +1115,7 @@ class MelisReactApiController extends MelisAbstractActionController
 
                 return $this->jsonResponse(['success' => true]);
             } catch (\Throwable $e) {
-                return $this->jsonResponse(['success' => false, 'error' => $e->getMessage()]);
+                return $this->genericError($e);
             }
         }
 
@@ -1200,15 +1200,7 @@ class MelisReactApiController extends MelisAbstractActionController
         try {
             return $this->buildMenuResponse($full);
         } catch (\Throwable $e) {
-            return $this->jsonResponse([
-                'success' => false,
-                'error'   => $e->getMessage(),
-                'file'    => $e->getFile() . ':' . $e->getLine(),
-                'trace'   => array_slice(array_map(
-                    fn($f) => ($f['file'] ?? '?') . ':' . ($f['line'] ?? '?') . ' ' . ($f['function'] ?? ''),
-                    $e->getTrace()
-                ), 0, 5),
-            ], 500);
+            return $this->genericError($e);
         }
     }
 
@@ -1715,6 +1707,17 @@ class MelisReactApiController extends MelisAbstractActionController
     }
 
     // ─── Helpers HTTP/Auth ───────────────────────────────────────────────────
+
+    /**
+     * SECURITY (audit RA-M2) : ne jamais renvoyer le message/fichier/ligne/trace d'une
+     * exception au client (chemins vendor, SQL, structure) — détail au log serveur,
+     * message générique dans la réponse.
+     */
+    private function genericError(\Throwable $e, int $status = 500): HttpResponse
+    {
+        error_log('MelisReactApi: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+        return $this->jsonResponse(['success' => false, 'error' => 'Internal error'], $status);
+    }
 
     /**
      * Retourne une réponse JSON pure, sans passer par le système de vues Laminas.
