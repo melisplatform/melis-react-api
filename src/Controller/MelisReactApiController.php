@@ -556,12 +556,63 @@ class MelisReactApiController extends MelisAbstractActionController
             }
         } catch (\Throwable $e) { /* keep 0 */ }
 
-        // Updates — count not yet wired (legacy always returned a placeholder 0 here). The former
-        // MelisMarketPlace `isMarketplaceAccessible` dispatch was a blocking cURL to marketplace
-        // (up to 5s) whose result was DISCARDED — removed so it no longer stalls the cold load.
-        // $data['updates']['count'] stays 0 until a real update count is implemented.
+        // Updates — same count as the legacy bubble (MelisCoreDashboardBubbleUpdatesPlugin::getUpdates):
+        // vendor modules whose marketplace version is newer than the installed one (Mantis #0011504).
+        // The marketplace call is platform-wide, so it is cached across sessions like the News feed.
+        try {
+            $updatesCount = $this->externalCached('dashboard-updates-count', 1800, function () use ($sm) {
+                return $this->countModuleUpdates($sm);
+            });
+            if ($updatesCount !== null) {
+                $data['updates']['count'] = (int) $updatesCount;
+            }
+        } catch (\Throwable $e) { /* keep 0 */ }
 
         return $this->jsonResponse(['success' => true, 'data' => $data]);
+    }
+
+    /**
+     * Number of installed vendor modules with a newer version on the marketplace, computed like the
+     * legacy updates bubble (same package list, same exclusions, same version comparison).
+     * Returns 0 when MelisMarketPlace is not active, null when the marketplace cannot be reached
+     * (so the cache keeps the last known value instead of storing a false 0).
+     */
+    private function countModuleUpdates($sm): ?int
+    {
+        $moduleService = $sm->get('MelisAssetManagerModulesService');
+        if (!$moduleService->isModuleLoaded('MelisMarketPlace') || !$sm->has('MelisMarketPlaceService')) {
+            return 0;
+        }
+        $server = $sm->get('MelisConfig')->getItem('melismarketplace_toolstree_section/datas/')['melis_packagist_server'] ?? '';
+        if (!$server) {
+            return 0;
+        }
+
+        $ctx = stream_context_create(['http' => ['timeout' => 8], 'https' => ['timeout' => 8]]);
+        $raw = @file_get_contents($server . '/get-packages/page/1/search//item_per_page/0/order/asc/order_by//status/2/group/', false, $ctx);
+        $resp = $raw === false ? null : json_decode((string) $raw, true);
+        if (!is_array($resp) || !isset($resp['packages']) || !is_array($resp['packages'])) {
+            return null;
+        }
+
+        $latest = [];   // composer package name => marketplace version
+        foreach ($resp['packages'] as $p) {
+            if (!empty($p['packageName'])) {
+                $latest[$p['packageName']] = $p['packageVersion'] ?? null;
+            }
+        }
+
+        $excluded = ['MelisAssetManager', 'MelisComposerDeploy', 'MelisDbDeploy', 'MelisInstaller', 'MelisCore', 'MelisEngine', 'MelisFront'];
+        $marketplace = $sm->get('MelisMarketPlaceService');
+        $count = 0;
+        foreach (array_diff($moduleService->getVendorModules(), $excluded) as $moduleName) {
+            $info = $moduleService->getModulesAndVersions($moduleName);
+            $version = $latest[$info['package'] ?? ''] ?? null;
+            if ((int) $marketplace->compareLocalVersionFromRepo($moduleName, $version) === -1) {
+                $count++;
+            }
+        }
+        return $count;
     }
 
     // ─── /melis/react-api/dashboard/stats ────────────────────────────────────
