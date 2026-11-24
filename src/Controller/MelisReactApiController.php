@@ -203,9 +203,7 @@ class MelisReactApiController extends MelisAbstractActionController
             $assets = \MelisReactOverride\Service\PlatformAssetsService::build($this->getServiceManager());
             return $this->jsonResponse(['success' => true, 'data' => $assets]);
         } catch (\Throwable $e) {
-            // Audit 13.0: this used to return the message, the absolute file:line and 8 stack
-            // frames. MelisCoreApiErrorSanitizerListener would scrub it anyway, but a payload
-            // that never holds the detail in the first place cannot leak it.
+            // Generic message and a correlation id; the detail goes to the PHP log.
             return $this->jsonResponse([
                 'success'  => false,
                 'error'    => \MelisCore\Support\MelisErrorReference::GENERIC_MESSAGE,
@@ -248,7 +246,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 ],
             ]);
         } catch (\Throwable $e) {
-            // Audit 13.0: no message, no absolute path - a correlation id, detail in the PHP log.
+            // Generic message and a correlation id; the detail goes to the PHP log.
             return $this->jsonResponse([
                 'success'  => false,
                 'error'    => \MelisCore\Support\MelisErrorReference::GENERIC_MESSAGE,
@@ -315,8 +313,8 @@ class MelisReactApiController extends MelisAbstractActionController
                       . "\n}catch(e){console.error('[melis] brick failed: {$label}',e)}\n";
             }
         } catch (\Throwable $e) {
-            // Audit 13.0: this string lands in the browser console - it carries the reference,
-            // never the exception message (detail in the PHP log, grep MELIS_API_ERROR).
+            // This string lands in the browser console: it carries the reference only,
+            // the detail goes to the PHP log.
             $ref = \MelisCore\Support\MelisErrorReference::log($e, 'MelisReactApi::bricksBundle');
             $out .= "\nconsole.error(" . json_encode('[melis] bricks bundle error (ref: ' . $ref . ')') . ");\n";
         }
@@ -963,9 +961,7 @@ class MelisReactApiController extends MelisAbstractActionController
                 }
                 return $this->jsonResponse(['success' => true, 'data' => $items]);
             } catch (\Throwable $e) {
-                // Audit 13.0: a 200 carrying an exception message slipped past the global
-                // scrubber (it only touches 4xx/5xx and exception-shaped payloads) - so this
-                // one sanitises itself, and says 500, which is what it always was.
+                // Generic message and a correlation id, returned as a 500.
                 return $this->jsonResponse([
                     'success'  => false,
                     'error'    => \MelisCore\Support\MelisErrorReference::GENERIC_MESSAGE,
@@ -1089,9 +1085,7 @@ class MelisReactApiController extends MelisAbstractActionController
 
                 return $this->jsonResponse(['success' => true]);
             } catch (\Throwable $e) {
-                // Audit 13.0: a 200 carrying an exception message slipped past the global
-                // scrubber (it only touches 4xx/5xx and exception-shaped payloads) - so this
-                // one sanitises itself, and says 500, which is what it always was.
+                // Generic message and a correlation id, returned as a 500.
                 return $this->jsonResponse([
                     'success'  => false,
                     'error'    => \MelisCore\Support\MelisErrorReference::GENERIC_MESSAGE,
