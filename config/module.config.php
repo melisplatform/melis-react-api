@@ -109,7 +109,7 @@ return [
                                 ],
                             ],
                             // ── Catalogue des microservices déclarés (section « API / microservices »
-                            //    de l'éditeur de droits — un seul droit d'accès par service, audit C4) ──
+                            //    de l'éditeur de droits — un seul droit d'accès par service) ──
                             'rights-microservices' => [
                                 'type'    => 'Segment',
                                 'options' => [

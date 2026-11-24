@@ -110,7 +110,7 @@ class MelisReactApiController extends MelisAbstractActionController
 
     /**
      * GET /melis/react-api/rights/microservices — catalogue des microservices déclarés
-     * (section « API / microservices » de l'éditeur de droits, audit C4). Énuméré par le core
+     * (section « API / microservices » de l'éditeur de droits). Énuméré par le core
      * depuis la config fusionnée : les modules ne déclarent QUE leur app.microservice.php.
      * `description` (clé tr_…) traduite dans la locale courante, comme rightsCapabilities.
      */
@@ -339,7 +339,7 @@ class MelisReactApiController extends MelisAbstractActionController
                       . "\n}catch(e){console.error('[melis] brick failed: {$label}',e)}\n";
             }
         } catch (\Throwable $e) {
-            // SECURITY (audit RA-M2) : plus de message d'exception injecté dans le JS servi.
+            // Message générique dans le JS servi ; détail au log serveur.
             error_log('MelisReactApi bricks bundle: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
             $out .= "\nconsole.error('[melis] bricks bundle error (see server log)');\n";
         }
@@ -621,10 +621,9 @@ class MelisReactApiController extends MelisAbstractActionController
 
         // Recent activity — last N users to log in.
         /**
-         * SECURITY (audit RA-M1) : l'activité NOMINATIVE (id, nom complet, date de connexion
-         * des derniers utilisateurs) partait à TOUT compte authentifié — matière à ciblage
-         * (spear-phishing, horaires de présence). Elle n'est renvoyée qu'aux détenteurs du
-         * droit de l'outil Utilisateurs ; les autres comptes reçoivent les seuls KPIs anonymes.
+         * L'activité nominative (id, nom complet, date de connexion des derniers utilisateurs)
+         * n'est renvoyée qu'aux détenteurs du droit de l'outil Utilisateurs ; les autres
+         * comptes reçoivent les seuls KPIs anonymes.
          */
         $activity = [];
         $canSeeUsers = false;
@@ -1709,9 +1708,7 @@ class MelisReactApiController extends MelisAbstractActionController
     // ─── Helpers HTTP/Auth ───────────────────────────────────────────────────
 
     /**
-     * SECURITY (audit RA-M2) : ne jamais renvoyer le message/fichier/ligne/trace d'une
-     * exception au client (chemins vendor, SQL, structure) — détail au log serveur,
-     * message générique dans la réponse.
+     * Détail de l'exception au log serveur, message générique dans la réponse.
      */
     private function genericError(\Throwable $e, int $status = 500): HttpResponse
     {
